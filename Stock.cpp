@@ -2,7 +2,7 @@
 #include "Wireless.h"
 #include "Secrets.h"
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
+#include <WiFiClient.h>
 
 static const uint32_t STOCK_HTTP_TIMEOUT_MS = 4000;
 static const uint32_t STOCK_REQUEST_WATCHDOG_MS = 12000;
@@ -89,11 +89,10 @@ static void StockTask(void * parameter)
 
   char url[192];
   snprintf(url, sizeof(url),
-    "https://finnhub.io/api/v1/quote?symbol=%s&token=%s",
+    "http://finnhub.io/api/v1/quote?symbol=%s&token=%s",
     quote->symbol, FINNHUB_TOKEN);
 
-  WiFiClientSecure client;
-  client.setInsecure();
+  WiFiClient client;
   client.setTimeout(STOCK_HTTP_TIMEOUT_MS);
 
   HTTPClient http;
@@ -110,7 +109,7 @@ static void StockTask(void * parameter)
   http.setConnectTimeout(STOCK_HTTP_TIMEOUT_MS);
   http.setTimeout(STOCK_HTTP_TIMEOUT_MS);
 
-  printf("Stock request start: %s\r\n", quote->symbol);
+  printf("Stock request start: %s via HTTP\r\n", quote->symbol);
   int http_code = http.GET();
   printf("Stock HTTP code %s: %d\r\n", quote->symbol, http_code);
   if(http_code != HTTP_CODE_OK) {

@@ -2,6 +2,10 @@
 
 Stock ticker project for the Waveshare ESP32-S3-LCD-1.47B board.
 
+## Demo
+
+![ESP32 stock ticker demo](images/demo.jpg)
+
 ## Features
 
 - Landscape stock quote UI for the 1.47 inch LCD
