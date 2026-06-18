@@ -1,0 +1,11 @@
+Secrets.h
+
+build/
+*.bin
+*.elf
+*.map
+*.hex
+*.uf2
+*.partitions.bin
+*.tmp
+*.log

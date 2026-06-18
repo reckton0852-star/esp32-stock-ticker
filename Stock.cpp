@@ -1,0 +1,345 @@
+#include "Stock.h"
+#include "Wireless.h"
+#include "Secrets.h"
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+
+static const uint32_t STOCK_HTTP_TIMEOUT_MS = 4000;
+static const uint32_t STOCK_REQUEST_WATCHDOG_MS = 12000;
+static const uint32_t STOCK_REQUEST_GAP_MS = 2000;
+
+static StockQuote quotes[] = {
+  {"WDC", "W. Digital",      0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
+  {"MU",  "Micron",          0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
+  {"AAPL", "Apple",          0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
+  {"NVDA", "NVIDIA",         0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
+  {"AVGO", "Broadcom",       0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
+  {"TSM", "TSMC",            0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
+};
+
+const size_t STOCK_COUNT = sizeof(quotes) / sizeof(quotes[0]);
+static const size_t NO_PENDING_PRIORITY = (size_t)-1;
+
+static size_t current_index = 0;
+static size_t auto_refresh_index = 0;
+static size_t pending_priority_index = NO_PENDING_PRIORITY;
+static size_t in_flight_index = NO_PENDING_PRIORITY;
+static uint32_t request_started_ms = 0;
+static uint32_t next_request_allowed_ms = 0;
+static bool request_in_flight = false;
+static TaskHandle_t stock_task_handle = NULL;
+
+static bool start_stock_task(size_t index);
+static void finish_stock_request(StockQuote * quote);
+
+static bool extract_json_float(const String& payload, const char * key, float * value)
+{
+  int start = payload.indexOf(key);
+  if(start < 0) {
+    return false;
+  }
+
+  start += strlen(key);
+  while(start < payload.length() && (payload[start] == ' ' || payload[start] == '\t')) {
+    start++;
+  }
+
+  int end = start;
+  while(end < payload.length()) {
+    char c = payload[end];
+    if((c >= '0' && c <= '9') || c == '.' || c == '-') {
+      end++;
+    } else {
+      break;
+    }
+  }
+
+  if(end <= start) {
+    return false;
+  }
+
+  *value = payload.substring(start, end).toFloat();
+  return true;
+}
+
+static void update_timestamp(StockQuote * quote)
+{
+  struct tm timeinfo;
+  if(Wireless_GetLocalTime(&timeinfo)) {
+    snprintf(quote->updated_at, sizeof(quote->updated_at), "%02d:%02d",
+      timeinfo.tm_hour, timeinfo.tm_min);
+  } else {
+    snprintf(quote->updated_at, sizeof(quote->updated_at), "--:--");
+  }
+}
+
+static void StockTask(void * parameter)
+{
+  size_t index = (size_t)(uintptr_t)parameter;
+  StockQuote * quote = &quotes[index];
+
+  if(!WIFI_Connection) {
+    if(!quote->ready) {
+      snprintf(quote->status, sizeof(quote->status), "Wi-Fi offline");
+    }
+    finish_stock_request(quote);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  char url[192];
+  snprintf(url, sizeof(url),
+    "https://finnhub.io/api/v1/quote?symbol=%s&token=%s",
+    quote->symbol, FINNHUB_TOKEN);
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(STOCK_HTTP_TIMEOUT_MS);
+
+  HTTPClient http;
+  if(!http.begin(client, url)) {
+    if(!quote->ready) {
+      snprintf(quote->status, sizeof(quote->status), "HTTP begin fail");
+    }
+    client.stop();
+    finish_stock_request(quote);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  http.setConnectTimeout(STOCK_HTTP_TIMEOUT_MS);
+  http.setTimeout(STOCK_HTTP_TIMEOUT_MS);
+
+  printf("Stock request start: %s\r\n", quote->symbol);
+  int http_code = http.GET();
+  printf("Stock HTTP code %s: %d\r\n", quote->symbol, http_code);
+  if(http_code != HTTP_CODE_OK) {
+    if(!quote->ready) {
+      snprintf(quote->status, sizeof(quote->status), "HTTP %d", http_code);
+    }
+    http.end();
+    client.stop();
+    finish_stock_request(quote);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  String payload = http.getString();
+  http.end();
+  client.stop();
+
+  float price = 0.0f;
+  float change = 0.0f;
+  float change_percent = 0.0f;
+  float previous_close = 0.0f;
+
+  bool ok_price = extract_json_float(payload, "\"c\":", &price);
+  bool ok_change = extract_json_float(payload, "\"d\":", &change);
+  bool ok_dp = extract_json_float(payload, "\"dp\":", &change_percent);
+  bool ok_previous_close = extract_json_float(payload, "\"pc\":", &previous_close);
+
+  if(ok_price && price > 0.01f) {
+    if(!ok_change && ok_previous_close && previous_close > 0.01f) {
+      change = price - previous_close;
+      ok_change = true;
+    }
+    if(!ok_dp && ok_previous_close && previous_close > 0.01f) {
+      change_percent = change * 100.0f / previous_close;
+      ok_dp = true;
+    }
+    if(!ok_change) {
+      change = 0.0f;
+    }
+    if(!ok_dp) {
+      change_percent = 0.0f;
+    }
+
+    quote->price = price;
+    quote->change = change;
+    quote->change_percent = change_percent;
+    quote->ready = true;
+    snprintf(quote->status, sizeof(quote->status), "NASDAQ - USD");
+    update_timestamp(quote);
+    printf("Stock ok %s: %.2f %.2f %.2f%%\r\n",
+      quote->symbol, quote->price, quote->change, quote->change_percent);
+  } else {
+    if(!quote->ready) {
+      snprintf(quote->status, sizeof(quote->status), "Parse fail");
+    }
+    printf("Stock parse failed: %s\r\n", quote->symbol);
+  }
+
+  finish_stock_request(quote);
+  vTaskDelete(NULL);
+}
+
+static void finish_stock_request(StockQuote * quote)
+{
+  if(quote) {
+    quote->loading = false;
+  }
+  request_in_flight = false;
+  in_flight_index = NO_PENDING_PRIORITY;
+  request_started_ms = 0;
+  next_request_allowed_ms = millis() + STOCK_REQUEST_GAP_MS;
+  stock_task_handle = NULL;
+}
+
+static void Stock_ServiceWatchdog(void)
+{
+  if(!request_in_flight || request_started_ms == 0) {
+    return;
+  }
+
+  uint32_t now = millis();
+  if(now - request_started_ms <= STOCK_REQUEST_WATCHDOG_MS) {
+    return;
+  }
+
+  printf("Stock request watchdog timeout\r\n");
+  if(stock_task_handle) {
+    vTaskDelete(stock_task_handle);
+  }
+
+  if(in_flight_index < STOCK_COUNT) {
+    quotes[in_flight_index].loading = false;
+  }
+
+  stock_task_handle = NULL;
+  request_in_flight = false;
+  in_flight_index = NO_PENDING_PRIORITY;
+  request_started_ms = 0;
+  next_request_allowed_ms = millis() + STOCK_REQUEST_GAP_MS;
+  WIFI_Connection = false;
+  WiFi.disconnect(false);
+}
+
+static bool start_stock_task(size_t index)
+{
+  if(request_in_flight) {
+    return false;
+  }
+
+  uint32_t now = millis();
+  if(next_request_allowed_ms != 0 && (int32_t)(now - next_request_allowed_ms) < 0) {
+    return false;
+  }
+
+  StockQuote * quote = &quotes[index];
+  quote->loading = true;
+  quote->last_fetch_ms = millis();
+  in_flight_index = index;
+  request_started_ms = millis();
+  request_in_flight = true;
+
+  BaseType_t created = xTaskCreatePinnedToCore(
+    StockTask,
+    "StockTask",
+    8192,
+    (void *)(uintptr_t)index,
+    1,
+    &stock_task_handle,
+    0
+  );
+
+  if(created != pdPASS) {
+    snprintf(quote->status, sizeof(quote->status), "Task fail");
+    quote->loading = false;
+    request_in_flight = false;
+    in_flight_index = NO_PENDING_PRIORITY;
+    request_started_ms = 0;
+    stock_task_handle = NULL;
+    return false;
+  }
+
+  return true;
+}
+
+void Stock_Init(void)
+{
+  current_index = 0;
+  auto_refresh_index = 0;
+  pending_priority_index = current_index;
+}
+
+void Stock_Next(void)
+{
+  current_index = (current_index + 1) % STOCK_COUNT;
+}
+
+void Stock_Previous(void)
+{
+  if(current_index == 0) {
+    current_index = STOCK_COUNT - 1;
+  } else {
+    current_index--;
+  }
+}
+
+size_t Stock_CurrentIndex(void)
+{
+  return current_index;
+}
+
+const StockQuote * Stock_CurrentQuote(void)
+{
+  return &quotes[current_index];
+}
+
+void Stock_RequestCurrent(void)
+{
+  if(!start_stock_task(current_index)) {
+    pending_priority_index = current_index;
+  }
+}
+
+bool Stock_RequestCurrentIfStale(uint32_t min_interval_ms)
+{
+  if(request_in_flight) {
+    pending_priority_index = current_index;
+    return false;
+  }
+
+  StockQuote * quote = &quotes[current_index];
+  uint32_t now = millis();
+  if(quote->ready && min_interval_ms > 0 && quote->last_fetch_ms != 0 && now - quote->last_fetch_ms < min_interval_ms) {
+    return false;
+  }
+
+  return start_stock_task(current_index);
+}
+
+static bool quote_needs_refresh(const StockQuote * quote, uint32_t now, uint32_t refresh_interval_ms, uint32_t retry_interval_ms)
+{
+  uint32_t interval = quote->ready ? refresh_interval_ms : retry_interval_ms;
+  return quote->last_fetch_ms == 0 || now - quote->last_fetch_ms >= interval;
+}
+
+void Stock_ServiceAutoRefresh(uint32_t refresh_interval_ms, uint32_t retry_interval_ms)
+{
+  Stock_ServiceWatchdog();
+
+  if(request_in_flight) {
+    return;
+  }
+
+  uint32_t now = millis();
+  if(pending_priority_index < STOCK_COUNT) {
+    size_t index = pending_priority_index;
+    pending_priority_index = NO_PENDING_PRIORITY;
+    printf("Stock priority refresh: %s\r\n", quotes[index].symbol);
+    (void)start_stock_task(index);
+    return;
+  }
+
+  for(size_t step = 0; step < STOCK_COUNT; step++) {
+    size_t index = (auto_refresh_index + step) % STOCK_COUNT;
+    StockQuote * quote = &quotes[index];
+    if(quote_needs_refresh(quote, now, refresh_interval_ms, retry_interval_ms)) {
+      auto_refresh_index = (index + 1) % STOCK_COUNT;
+      printf("Stock auto refresh: %s\r\n", quote->symbol);
+      (void)start_stock_task(index);
+      return;
+    }
+  }
+}
