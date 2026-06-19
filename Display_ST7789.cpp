@@ -68,7 +68,7 @@ void LCD_Init(void)
   delay(120);
   LCD_WriteCommand(0x36);
   if (HORIZONTAL)
-      LCD_WriteData(0x00);
+      LCD_WriteData(0x08);
   else
       LCD_WriteData(0xA8);
 

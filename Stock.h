@@ -10,8 +10,14 @@ typedef struct {
   float change_percent;
   bool ready;
   bool loading;
+  bool profile_ready;
   char status[32];
   char updated_at[24];
+  char industry[32];
+  char country[20];
+  char ipo[16];
+  char market_cap[16];
+  char shares_out[16];
   uint32_t last_fetch_ms;
 } StockQuote;
 

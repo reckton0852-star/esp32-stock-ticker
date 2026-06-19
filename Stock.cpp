@@ -9,12 +9,12 @@ static const uint32_t STOCK_REQUEST_WATCHDOG_MS = 12000;
 static const uint32_t STOCK_REQUEST_GAP_MS = 2000;
 
 static StockQuote quotes[] = {
-  {"WDC", "W. Digital",      0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
-  {"MU",  "Micron",          0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
-  {"AAPL", "Apple",          0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
-  {"NVDA", "NVIDIA",         0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
-  {"AVGO", "Broadcom",       0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
-  {"TSM", "TSMC",            0.0f, 0.0f, 0.0f, false, false, "Waiting", "--:--", 0},
+  {"WDC", "W. Digital", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
+  {"MU", "Micron", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
+  {"AAPL", "Apple", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
+  {"NVDA", "NVIDIA", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
+  {"AVGO", "Broadcom", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
+  {"TSM", "TSMC", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
 };
 
 const size_t STOCK_COUNT = sizeof(quotes) / sizeof(quotes[0]);
@@ -93,6 +93,11 @@ static bool extract_json_string(const String& payload, const char * key, char * 
   return true;
 }
 
+static void copy_or_default(char * dest, size_t dest_size, bool ok, const char * value, const char * fallback)
+{
+  snprintf(dest, dest_size, "%s", (ok && value && value[0] != '\0') ? value : fallback);
+}
+
 static void update_timestamp(StockQuote * quote)
 {
   struct tm timeinfo;
@@ -164,12 +169,22 @@ static void StockTask(void * parameter)
   float change_percent = 0.0f;
   char status[32] = {0};
   char updated_at[24] = {0};
+  char industry[32] = {0};
+  char country[20] = {0};
+  char ipo[16] = {0};
+  char market_cap[16] = {0};
+  char shares_out[16] = {0};
 
   bool ok_price = extract_json_float(payload, "\"c\":", &price);
   bool ok_change = extract_json_float(payload, "\"d\":", &change);
   bool ok_dp = extract_json_float(payload, "\"dp\":", &change_percent);
   bool ok_status = extract_json_string(payload, "\"status\":", status, sizeof(status));
   bool ok_updated_at = extract_json_string(payload, "\"updated_at\":", updated_at, sizeof(updated_at));
+  bool ok_industry = extract_json_string(payload, "\"industry\":", industry, sizeof(industry));
+  bool ok_country = extract_json_string(payload, "\"country\":", country, sizeof(country));
+  bool ok_ipo = extract_json_string(payload, "\"ipo\":", ipo, sizeof(ipo));
+  bool ok_market_cap = extract_json_string(payload, "\"market_cap\":", market_cap, sizeof(market_cap));
+  bool ok_shares_out = extract_json_string(payload, "\"shares_out\":", shares_out, sizeof(shares_out));
 
   if(ok_price && price > 0.01f) {
     if(!ok_change) {
@@ -185,6 +200,12 @@ static void StockTask(void * parameter)
     quote->ready = true;
     snprintf(quote->status, sizeof(quote->status), "%s", ok_status ? status : "USD");
     snprintf(quote->updated_at, sizeof(quote->updated_at), "%s", ok_updated_at ? updated_at : "--:--");
+    copy_or_default(quote->industry, sizeof(quote->industry), ok_industry, industry, "-");
+    copy_or_default(quote->country, sizeof(quote->country), ok_country, country, "-");
+    copy_or_default(quote->ipo, sizeof(quote->ipo), ok_ipo, ipo, "-");
+    copy_or_default(quote->market_cap, sizeof(quote->market_cap), ok_market_cap, market_cap, "-");
+    copy_or_default(quote->shares_out, sizeof(quote->shares_out), ok_shares_out, shares_out, "-");
+    quote->profile_ready = ok_industry || ok_country || ok_ipo || ok_market_cap || ok_shares_out;
     printf("Stock ok %s: %.2f %.2f %.2f%%\r\n",
       quote->symbol, quote->price, quote->change, quote->change_percent);
   } else {

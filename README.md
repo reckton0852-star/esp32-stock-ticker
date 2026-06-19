@@ -1,36 +1,29 @@
 # ESP32-S3 LCD Stock Ticker
 
-A small stock ticker project for the Waveshare `ESP32-S3-LCD-1.47B` board.
+A compact US stock ticker for the Waveshare `ESP32-S3-LCD-1.47B` board.
 
-It displays US stock quotes on the 1.47 inch LCD in a compact landscape layout and switches symbols with the onboard buttons.
-
-## 中文说明
-
-这是一个基于微雪 `ESP32-S3-LCD-1.47B` 开发板的小屏幕美股行情项目。
-
-它的特点是：
-
-- 1.47 寸横屏显示单只股票卡片
-- 通过板载两个按键切换股票
-- 后台每 60 秒自动刷新
-- 刷新失败时保留上一笔成功价格
-- 适合放在桌面当作迷你信息屏
-
-目前项目使用本地代理方式获取 Finnhub 数据，这样比 ESP32 直接请求外网更稳定。
+It shows one stock at a time on the 1.47 inch LCD, supports button switching, dual-page viewing, automatic symbol rotation, and a local quote proxy for more stable updates.
 
 ## Demo
 
 ![ESP32 stock ticker demo](images/demo.jpg)
 
-## What This Project Does
+## Features
 
-- Shows one stock card at a time on the LCD
-- Uses the left/right buttons to switch symbols
-- Refreshes quotes in the background every 60 seconds
-- Keeps the last successful price on screen while the next refresh is running
-- Uses `red` for up and `green` for down
-- Supports fallback WiFi credentials
-- Uses a local proxy on your computer for more stable Finnhub access
+- Landscape stock card UI for the 1.47 inch LCD
+- Dual-page mode:
+  - Page 1: quote, change percent, market, update time
+  - Page 2: company basics
+- Single click: next symbol
+- Long press: previous symbol
+- Double click: switch between quote page and basics page
+- Automatic background refresh every 60 seconds
+- Automatic symbol rotation every 12 seconds
+- Keeps the last successful price on screen while refreshing
+- Up = red box, red LED
+- Down = green box, green LED
+- WiFi fallback between multiple saved networks
+- Local Node.js proxy for stable Finnhub access
 
 ## Current Symbols
 
@@ -41,12 +34,15 @@ It displays US stock quotes on the 1.47 inch LCD in a compact landscape layout a
 - AVGO
 - TSM
 
-## Controls
+## Page 2 Basics
 
-- Button 1: previous symbol
-- Button 2: next symbol
+The second page currently shows:
 
-The screen shows one symbol at a time, with a page indicator such as `2/6` in the top-right corner.
+- Industry
+- Country
+- Market Cap
+- Shares Outstanding
+- IPO Date
 
 ## Hardware
 
@@ -59,22 +55,22 @@ The screen shows one symbol at a time, with a page indicator such as `2/6` in th
 ## Project Structure
 
 - `LVGL_Arduino.ino`: Arduino entry file
-- `Stock.cpp` / `Stock.h`: quote refresh and stock data logic
-- `LVGL_Example.cpp`: screen layout and UI rendering
+- `LVGL_Example.cpp`: screen layout, page switching, button behavior
+- `Stock.cpp` / `Stock.h`: quote refresh and stock data model
 - `Secrets.example.h`: template for local WiFi and proxy settings
 - `proxy/stock-proxy.js`: local Node.js proxy for Finnhub
 - `proxy/start-stock-proxy.cmd`: one-click proxy launcher on Windows
 
 ## Why Use a Local Proxy
 
-Direct HTTPS requests from the ESP32 were unstable in this project and could eventually hit memory/network issues during repeated refreshes.
+Direct HTTPS requests from the ESP32 were not stable enough during repeated refreshes.
 
 The local proxy helps by:
 
 - requesting Finnhub from your computer instead of the ESP32
-- caching quote results
+- caching quote and company profile data
 - giving the ESP32 a simpler local HTTP endpoint
-- making refresh behavior more stable
+- reducing network and memory pressure on the board
 
 ## Setup
 
@@ -91,11 +87,14 @@ In your Arduino LVGL library `lv_conf.h`, enable these fonts:
 
 ```cpp
 #define LV_FONT_MONTSERRAT_20 1
+#define LV_FONT_MONTSERRAT_24 1
 #define LV_FONT_MONTSERRAT_32 1
 #define LV_FONT_MONTSERRAT_36 1
+#define LV_FONT_MONTSERRAT_40 1
+#define LV_FONT_MONTSERRAT_48 1
 ```
 
-If these fonts are disabled, the sketch may still compile, but the UI will fall back to smaller fonts.
+The project will automatically prefer larger fonts when they are enabled.
 
 ### 3. ESP32 Local Config
 
@@ -132,8 +131,6 @@ On Windows, double-click:
 proxy/start-stock-proxy.cmd
 ```
 
-This starts the local Node.js proxy.
-
 Default health check:
 
 ```text
@@ -148,19 +145,15 @@ Open:
 
 Then compile and upload from Arduino IDE.
 
-## Quick Start in Chinese
+## Quick Start
 
-1. 把 `Secrets.example.h` 复制成 `Secrets.h`
-2. 在 `Secrets.h` 里填好 WiFi 和代理地址
-3. 把 `proxy/proxy-secrets.example.json` 复制成 `proxy/proxy-secrets.json`
-4. 在 `proxy/proxy-secrets.json` 里填好 Finnhub API Key
-5. 双击运行 `proxy/start-stock-proxy.cmd`
-6. 在 Arduino IDE 打开 `LVGL_Arduino.ino`
-7. 选择 `ESP32S3 Dev Module`
-8. 分区方案选大一点，比如 `Huge APP`
-9. 编译并上传到开发板
-
-如果屏幕亮起并显示股票卡片，就说明已经跑起来了。
+1. Copy `Secrets.example.h` to `Secrets.h`
+2. Fill in WiFi and proxy address in `Secrets.h`
+3. Copy `proxy/proxy-secrets.example.json` to `proxy/proxy-secrets.json`
+4. Fill in your Finnhub API key
+5. Start `proxy/start-stock-proxy.cmd`
+6. Open `LVGL_Arduino.ino` in Arduino IDE
+7. Upload to the board
 
 ## Proxy API
 
@@ -181,6 +174,11 @@ Example response:
   "d": 0.74,
   "dp": 1.22,
   "updated_at": "21:34",
+  "industry": "Technology",
+  "country": "US",
+  "ipo": "2015-05-06",
+  "market_cap": "34.5B",
+  "shares_out": "326M",
   "ready": true,
   "error": ""
 }
@@ -190,8 +188,8 @@ Example response:
 
 - `Secrets.h` is ignored by Git and should stay local
 - `proxy/proxy-secrets.json` is ignored by Git and should stay local
-- if the proxy is not running, the board will keep the last successful quote on screen
-- if a refresh fails, the screen should not clear the old price
+- if the proxy is not running, the board keeps the last successful quote on screen
+- if a refresh fails, the old price is not cleared
 
 ## Troubleshooting
 
@@ -202,7 +200,7 @@ If Arduino shows errors such as:
 - `file truncated`
 - `archive is not an object`
 
-delete the Arduino build cache folder:
+delete:
 
 ```text
 C:\Users\reckt\AppData\Local\arduino\sketches\
@@ -233,21 +231,15 @@ Open Arduino Serial Monitor at `115200` and check:
 
 ## Known Issues
 
-- Direct HTTPS access from ESP32 to public stock APIs may become unstable over time
-- Some WiFi environments may need a fixed local IP for the proxy computer
-- If the proxy computer is turned off, the board can only keep the last cached quote on screen
+- Direct HTTPS access from ESP32 to public stock APIs can still be fragile on small devices
+- If the proxy computer is turned off, the board can only show the last cached quote
 
 ## Roadmap
 
-- add more symbols through a simpler config file
-- support a second screen style
+- add configurable symbols from a simpler file
+- add more screen styles
 - show market open/close status
-- try a more reliable upstream data source
-- continue optimizing long-running refresh stability
-
-## Screenshot
-
-You can place real device photos in the `images/` folder and reference them here for the GitHub page.
+- support additional data sources
 
 ## License
 

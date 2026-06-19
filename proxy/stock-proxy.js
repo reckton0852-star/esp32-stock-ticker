@@ -32,6 +32,11 @@ const cache = new Map(
       d: 0,
       dp: 0,
       updated_at: "--:--",
+      industry: "-",
+      country: "-",
+      ipo: "-",
+      market_cap: "-",
+      shares_out: "-",
       ready: false,
       error: "",
     },
@@ -51,8 +56,37 @@ function nowTimeString() {
   return `${hh}:${mm}`;
 }
 
-async function fetchQuote(item) {
-  const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(item.symbol)}&token=${encodeURIComponent(config.finnhubToken)}`;
+function formatMarketCapMillions(value) {
+  const num = Number(value || 0);
+  if (!(num > 0)) {
+    return "-";
+  }
+
+  if (num >= 1000000) {
+    return `${(num / 1000000).toFixed(2)}T`;
+  }
+
+  if (num >= 1000) {
+    return `${(num / 1000).toFixed(1)}B`;
+  }
+
+  return `${num.toFixed(0)}M`;
+}
+
+function formatShareMillions(value) {
+  const num = Number(value || 0);
+  if (!(num > 0)) {
+    return "-";
+  }
+
+  if (num >= 1000) {
+    return `${(num / 1000).toFixed(2)}B`;
+  }
+
+  return `${num.toFixed(0)}M`;
+}
+
+async function fetchJson(url) {
   const response = await fetch(url, {
     headers: { "User-Agent": "esp32-stock-proxy/1.0" },
   });
@@ -61,7 +95,12 @@ async function fetchQuote(item) {
     throw new Error(`HTTP ${response.status}`);
   }
 
-  const data = await response.json();
+  return response.json();
+}
+
+async function fetchQuote(item) {
+  const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(item.symbol)}&token=${encodeURIComponent(config.finnhubToken)}`;
+  const data = await fetchJson(url);
   const price = Number(data.c || 0);
   let change = Number(data.d || 0);
   let changePercent = Number(data.dp || 0);
@@ -79,14 +118,52 @@ async function fetchQuote(item) {
     changePercent = (change * 100) / previousClose;
   }
 
-  cache.set(item.symbol, {
-    symbol: item.symbol,
-    name: item.name,
-    status: item.status,
+  return {
     c: Number(price.toFixed(2)),
     d: Number(change.toFixed(2)),
     dp: Number(changePercent.toFixed(2)),
     updated_at: nowTimeString(),
+  };
+}
+
+async function fetchProfile(item) {
+  const url = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(item.symbol)}&token=${encodeURIComponent(config.finnhubToken)}`;
+  const data = await fetchJson(url);
+
+  return {
+    industry: String(data.finnhubIndustry || "-"),
+    country: String(data.country || "-"),
+    ipo: String(data.ipo || "-"),
+    market_cap: formatMarketCapMillions(data.marketCapitalization),
+    shares_out: formatShareMillions(data.shareOutstanding),
+  };
+}
+
+async function refreshSymbol(item) {
+  const current = cache.get(item.symbol);
+  const quoteData = await fetchQuote(item);
+
+  let profileData = {
+    industry: current.industry || "-",
+    country: current.country || "-",
+    ipo: current.ipo || "-",
+    market_cap: current.market_cap || "-",
+    shares_out: current.shares_out || "-",
+  };
+
+  try {
+    profileData = await fetchProfile(item);
+  } catch (error) {
+    console.log(`[WARN] ${item.symbol} profile: ${error.message || error}`);
+  }
+
+  cache.set(item.symbol, {
+    ...current,
+    symbol: item.symbol,
+    name: item.name,
+    status: item.status,
+    ...quoteData,
+    ...profileData,
     ready: true,
     error: "",
   });
@@ -101,7 +178,7 @@ async function refreshAllQuotes() {
   try {
     for (const item of symbols) {
       try {
-        await fetchQuote(item);
+        await refreshSymbol(item);
         console.log(`[OK] ${item.symbol}`, cache.get(item.symbol));
       } catch (error) {
         const current = cache.get(item.symbol);
