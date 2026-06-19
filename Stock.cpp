@@ -62,6 +62,37 @@ static bool extract_json_float(const String& payload, const char * key, float * 
   return true;
 }
 
+static bool extract_json_string(const String& payload, const char * key, char * value, size_t value_size)
+{
+  int start = payload.indexOf(key);
+  if(start < 0) {
+    return false;
+  }
+
+  start += strlen(key);
+  if(start >= payload.length() || payload[start] != '"') {
+    return false;
+  }
+  start++;
+
+  int end = start;
+  while(end < payload.length()) {
+    if(payload[end] == '"' && (end == start || payload[end - 1] != '\\')) {
+      break;
+    }
+    end++;
+  }
+
+  if(end <= start) {
+    return false;
+  }
+
+  String parsed = payload.substring(start, end);
+  parsed.replace("\\\"", "\"");
+  parsed.toCharArray(value, value_size);
+  return true;
+}
+
 static void update_timestamp(StockQuote * quote)
 {
   struct tm timeinfo;
@@ -89,8 +120,8 @@ static void StockTask(void * parameter)
 
   char url[192];
   snprintf(url, sizeof(url),
-    "http://finnhub.io/api/v1/quote?symbol=%s&token=%s",
-    quote->symbol, FINNHUB_TOKEN);
+    "%s/quote?symbol=%s",
+    STOCK_PROXY_BASE_URL, quote->symbol);
 
   WiFiClient client;
   client.setTimeout(STOCK_HTTP_TIMEOUT_MS);
@@ -108,8 +139,9 @@ static void StockTask(void * parameter)
 
   http.setConnectTimeout(STOCK_HTTP_TIMEOUT_MS);
   http.setTimeout(STOCK_HTTP_TIMEOUT_MS);
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
 
-  printf("Stock request start: %s via HTTP\r\n", quote->symbol);
+  printf("Stock request start: %s via proxy\r\n", quote->symbol);
   int http_code = http.GET();
   printf("Stock HTTP code %s: %d\r\n", quote->symbol, http_code);
   if(http_code != HTTP_CODE_OK) {
@@ -130,22 +162,16 @@ static void StockTask(void * parameter)
   float price = 0.0f;
   float change = 0.0f;
   float change_percent = 0.0f;
-  float previous_close = 0.0f;
+  char status[32] = {0};
+  char updated_at[24] = {0};
 
   bool ok_price = extract_json_float(payload, "\"c\":", &price);
   bool ok_change = extract_json_float(payload, "\"d\":", &change);
   bool ok_dp = extract_json_float(payload, "\"dp\":", &change_percent);
-  bool ok_previous_close = extract_json_float(payload, "\"pc\":", &previous_close);
+  bool ok_status = extract_json_string(payload, "\"status\":", status, sizeof(status));
+  bool ok_updated_at = extract_json_string(payload, "\"updated_at\":", updated_at, sizeof(updated_at));
 
   if(ok_price && price > 0.01f) {
-    if(!ok_change && ok_previous_close && previous_close > 0.01f) {
-      change = price - previous_close;
-      ok_change = true;
-    }
-    if(!ok_dp && ok_previous_close && previous_close > 0.01f) {
-      change_percent = change * 100.0f / previous_close;
-      ok_dp = true;
-    }
     if(!ok_change) {
       change = 0.0f;
     }
@@ -157,8 +183,8 @@ static void StockTask(void * parameter)
     quote->change = change;
     quote->change_percent = change_percent;
     quote->ready = true;
-    snprintf(quote->status, sizeof(quote->status), "NASDAQ - USD");
-    update_timestamp(quote);
+    snprintf(quote->status, sizeof(quote->status), "%s", ok_status ? status : "USD");
+    snprintf(quote->updated_at, sizeof(quote->updated_at), "%s", ok_updated_at ? updated_at : "--:--");
     printf("Stock ok %s: %.2f %.2f %.2f%%\r\n",
       quote->symbol, quote->price, quote->change, quote->change_percent);
   } else {
@@ -326,19 +352,21 @@ void Stock_ServiceAutoRefresh(uint32_t refresh_interval_ms, uint32_t retry_inter
   if(pending_priority_index < STOCK_COUNT) {
     size_t index = pending_priority_index;
     pending_priority_index = NO_PENDING_PRIORITY;
-    printf("Stock priority refresh: %s\r\n", quotes[index].symbol);
-    (void)start_stock_task(index);
-    return;
+    if(start_stock_task(index)) {
+      printf("Stock priority refresh: %s\r\n", quotes[index].symbol);
+      return;
+    }
   }
 
   for(size_t step = 0; step < STOCK_COUNT; step++) {
     size_t index = (auto_refresh_index + step) % STOCK_COUNT;
     StockQuote * quote = &quotes[index];
     if(quote_needs_refresh(quote, now, refresh_interval_ms, retry_interval_ms)) {
-      auto_refresh_index = (index + 1) % STOCK_COUNT;
-      printf("Stock auto refresh: %s\r\n", quote->symbol);
-      (void)start_stock_task(index);
-      return;
+      if(start_stock_task(index)) {
+        auto_refresh_index = (index + 1) % STOCK_COUNT;
+        printf("Stock auto refresh: %s\r\n", quote->symbol);
+        return;
+      }
     }
   }
 }

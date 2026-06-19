@@ -14,7 +14,7 @@ Stock ticker project for the Waveshare ESP32-S3-LCD-1.47B board.
 - Keeps the last successful price on screen while refreshing
 - Red for up, green for down
 - WiFi fallback between home and office networks
-- Finnhub quote API support
+- Local stock proxy support for stable quote updates
 
 ## Symbols
 
@@ -28,11 +28,14 @@ Stock ticker project for the Waveshare ESP32-S3-LCD-1.47B board.
 ## Setup
 
 1. Copy `Secrets.example.h` to `Secrets.h`.
-2. Fill in your Finnhub API key and WiFi credentials.
-3. Open `LVGL_Arduino.ino` in Arduino IDE.
-4. Select board `ESP32S3 Dev Module`.
-5. Use a large app partition scheme, such as `Huge APP`.
-6. Upload to the board.
+2. Fill in your WiFi credentials and local proxy address.
+3. Copy `proxy/proxy-secrets.example.json` to `proxy/proxy-secrets.json`.
+4. Fill in your Finnhub API key in `proxy/proxy-secrets.json`.
+5. Start the local proxy with `proxy/start-stock-proxy.cmd`.
+6. Open `LVGL_Arduino.ino` in Arduino IDE.
+7. Select board `ESP32S3 Dev Module`.
+8. Use a large app partition scheme, such as `Huge APP`.
+9. Upload to the board.
 
 ## LVGL Font Note
 
@@ -53,3 +56,5 @@ smaller fallback fonts.
 `Secrets.h` is ignored by Git and should not be uploaded.
 
 Use `Secrets.example.h` as the template for other devices or machines.
+
+`proxy/proxy-secrets.json` is also ignored by Git and should stay local.
