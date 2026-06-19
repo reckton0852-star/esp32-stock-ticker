@@ -17,6 +17,13 @@ static uint32_t last_wifi_retry_ms = 0;
 static uint32_t last_auto_symbol_ms = 0;
 static uint8_t current_view_mode = 0;
 
+typedef enum {
+  THEME_CLASSIC = 0,
+  THEME_TERMINAL = 1,
+} ThemeMode;
+
+static ThemeMode current_theme_mode = THEME_TERMINAL;
+
 static void update_screen(void);
 
 static lv_obj_t * symbol_label = NULL;
@@ -40,6 +47,72 @@ static lv_obj_t * country_value_label = NULL;
 static lv_obj_t * market_cap_value_label = NULL;
 static lv_obj_t * shares_out_value_label = NULL;
 static lv_obj_t * ipo_value_label = NULL;
+static lv_obj_t * outer_panel = NULL;
+
+static bool terminal_theme(void)
+{
+  return current_theme_mode == THEME_TERMINAL;
+}
+
+static lv_color_t color_screen_bg(void)
+{
+  return terminal_theme() ? lv_color_hex(0x060b12) : lv_color_hex(0x120f12);
+}
+
+static lv_color_t color_outer_bg(void)
+{
+  return terminal_theme() ? lv_color_hex(0x0a111b) : lv_color_hex(0x161214);
+}
+
+static lv_color_t color_outer_text(void)
+{
+  return terminal_theme() ? lv_color_hex(0xe7edf7) : lv_color_hex(0xf8fafc);
+}
+
+static lv_color_t color_symbol_text(void)
+{
+  return terminal_theme() ? lv_color_hex(0x7dc4ff) : lv_color_hex(0xfacc15);
+}
+
+static lv_color_t color_company_text(void)
+{
+  return terminal_theme() ? lv_color_hex(0xd7e2f0) : lv_color_hex(0xcbd5e1);
+}
+
+static lv_color_t color_page_text(void)
+{
+  return terminal_theme() ? lv_color_hex(0x8f9db3) : lv_color_hex(0x94a3b8);
+}
+
+static lv_color_t color_content_bg(void)
+{
+  return terminal_theme() ? lv_color_hex(0x0d1622) : lv_color_hex(0xf8fafc);
+}
+
+static lv_color_t color_content_border(void)
+{
+  return terminal_theme() ? lv_color_hex(0x243346) : lv_color_hex(0xf8fafc);
+}
+
+static lv_color_t color_price_text(void)
+{
+  return terminal_theme() ? lv_color_hex(0xf4f7fb) : lv_color_hex(0x0f172a);
+}
+
+static lv_color_t color_meta_text(void)
+{
+  return terminal_theme() ? lv_color_hex(0x90a2b9) : lv_color_hex(0x334155);
+}
+
+static lv_color_t color_meta_title(void)
+{
+  return terminal_theme() ? lv_color_hex(0x5f7691) : lv_color_hex(0x64748b);
+}
+
+static lv_color_t color_basics_text(void)
+{
+  return terminal_theme() ? lv_color_hex(0xe7edf7) : lv_color_hex(0x0f172a);
+}
 
 static const lv_font_t * font_title(void)
 {
@@ -165,13 +238,13 @@ static void auto_advance_symbol_if_needed(void)
 static lv_obj_t * create_meta_pair(lv_obj_t * parent, const char * title, lv_coord_t x, lv_coord_t y, lv_obj_t ** value_label, lv_coord_t width)
 {
   lv_obj_t * title_label = lv_label_create(parent);
-  lv_obj_set_style_text_color(title_label, lv_color_hex(0x64748b), 0);
+  lv_obj_set_style_text_color(title_label, color_meta_title(), 0);
   lv_obj_set_style_text_font(title_label, font_meta(), 0);
   lv_label_set_text(title_label, title);
   lv_obj_set_pos(title_label, x, y);
 
   *value_label = lv_label_create(parent);
-  lv_obj_set_style_text_color(*value_label, lv_color_hex(0x0f172a), 0);
+  lv_obj_set_style_text_color(*value_label, color_basics_text(), 0);
   lv_obj_set_style_text_font(*value_label, font_meta_value(), 0);
   lv_label_set_long_mode(*value_label, LV_LABEL_LONG_CLIP);
   lv_obj_set_width(*value_label, width);
@@ -183,40 +256,44 @@ static void build_screen(void)
 {
   lv_obj_t * screen = lv_scr_act();
   lv_obj_clean(screen);
-  lv_obj_set_style_bg_color(screen, lv_color_hex(0x120f12), 0);
-  lv_obj_set_style_text_color(screen, lv_color_hex(0xf8fafc), 0);
+  lv_obj_set_style_bg_color(screen, color_screen_bg(), 0);
+  lv_obj_set_style_text_color(screen, color_outer_text(), 0);
 
-  lv_obj_t * outer = lv_obj_create(screen);
-  lv_obj_set_size(outer, 316, 164);
-  lv_obj_align(outer, LV_ALIGN_CENTER, 0, 0);
-  lv_obj_set_style_radius(outer, 4, 0);
-  lv_obj_set_style_bg_color(outer, lv_color_hex(0x161214), 0);
-  lv_obj_set_style_border_width(outer, 0, 0);
-  lv_obj_set_style_pad_all(outer, 6, 0);
-  lv_obj_clear_flag(outer, LV_OBJ_FLAG_SCROLLABLE);
+  outer_panel = lv_obj_create(screen);
+  lv_obj_set_size(outer_panel, 316, 164);
+  lv_obj_align(outer_panel, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_radius(outer_panel, terminal_theme() ? 2 : 4, 0);
+  lv_obj_set_style_bg_color(outer_panel, color_outer_bg(), 0);
+  lv_obj_set_style_border_width(outer_panel, terminal_theme() ? 1 : 0, 0);
+  lv_obj_set_style_border_color(outer_panel, terminal_theme() ? lv_color_hex(0x1f2d40) : color_outer_bg(), 0);
+  lv_obj_set_style_pad_all(outer_panel, 6, 0);
+  lv_obj_set_style_shadow_width(outer_panel, 0, 0);
+  lv_obj_clear_flag(outer_panel, LV_OBJ_FLAG_SCROLLABLE);
 
-  symbol_label = lv_label_create(outer);
+  symbol_label = lv_label_create(outer_panel);
   lv_obj_set_style_text_font(symbol_label, font_title(), 0);
-  lv_obj_set_style_text_color(symbol_label, lv_color_hex(0xfacc15), 0);
+  lv_obj_set_style_text_color(symbol_label, color_symbol_text(), 0);
   lv_obj_align(symbol_label, LV_ALIGN_TOP_LEFT, 0, 0);
 
-  company_label = lv_label_create(outer);
-  lv_obj_set_style_text_color(company_label, lv_color_hex(0xcbd5e1), 0);
+  company_label = lv_label_create(outer_panel);
+  lv_obj_set_style_text_color(company_label, color_company_text(), 0);
   lv_label_set_long_mode(company_label, LV_LABEL_LONG_CLIP);
   lv_obj_set_width(company_label, 170);
   lv_obj_align(company_label, LV_ALIGN_TOP_LEFT, 70, 2);
 
-  page_label = lv_label_create(outer);
-  lv_obj_set_style_text_color(page_label, lv_color_hex(0x94a3b8), 0);
+  page_label = lv_label_create(outer_panel);
+  lv_obj_set_style_text_color(page_label, color_page_text(), 0);
   lv_obj_align(page_label, LV_ALIGN_TOP_RIGHT, 0, 2);
 
-  content_panel = lv_obj_create(outer);
+  content_panel = lv_obj_create(outer_panel);
   lv_obj_set_size(content_panel, 304, 116);
   lv_obj_align(content_panel, LV_ALIGN_TOP_MID, 0, 28);
-  lv_obj_set_style_radius(content_panel, 4, 0);
-  lv_obj_set_style_bg_color(content_panel, lv_color_hex(0xf8fafc), 0);
-  lv_obj_set_style_border_width(content_panel, 0, 0);
+  lv_obj_set_style_radius(content_panel, terminal_theme() ? 2 : 4, 0);
+  lv_obj_set_style_bg_color(content_panel, color_content_bg(), 0);
+  lv_obj_set_style_border_width(content_panel, terminal_theme() ? 1 : 0, 0);
+  lv_obj_set_style_border_color(content_panel, color_content_border(), 0);
   lv_obj_set_style_pad_all(content_panel, 7, 0);
+  lv_obj_set_style_shadow_width(content_panel, 0, 0);
   lv_obj_clear_flag(content_panel, LV_OBJ_FLAG_SCROLLABLE);
 
   price_page = lv_obj_create(content_panel);
@@ -228,7 +305,7 @@ static void build_screen(void)
   lv_obj_clear_flag(price_page, LV_OBJ_FLAG_SCROLLABLE);
 
   price_label = lv_label_create(price_page);
-  lv_obj_set_style_text_color(price_label, lv_color_hex(0x0f172a), 0);
+  lv_obj_set_style_text_color(price_label, color_price_text(), 0);
   lv_obj_set_style_text_font(price_label, font_price(), 0);
   lv_label_set_long_mode(price_label, LV_LABEL_LONG_CLIP);
   lv_obj_set_width(price_label, 216);
@@ -259,11 +336,11 @@ static void build_screen(void)
   lv_obj_align(change_label, LV_ALIGN_CENTER, 0, 0);
 
   market_label = lv_label_create(price_page);
-  lv_obj_set_style_text_color(market_label, lv_color_hex(0x334155), 0);
+  lv_obj_set_style_text_color(market_label, color_meta_text(), 0);
   lv_obj_align(market_label, LV_ALIGN_BOTTOM_LEFT, 0, 1);
 
   updated_label = lv_label_create(price_page);
-  lv_obj_set_style_text_color(updated_label, lv_color_hex(0x334155), 0);
+  lv_obj_set_style_text_color(updated_label, color_meta_text(), 0);
   lv_obj_align(updated_label, LV_ALIGN_BOTTOM_RIGHT, -6, -2);
 
   profile_page = lv_obj_create(content_panel);
@@ -275,12 +352,12 @@ static void build_screen(void)
   lv_obj_clear_flag(profile_page, LV_OBJ_FLAG_SCROLLABLE);
 
   basics_title_label = lv_label_create(profile_page);
-  lv_obj_set_style_text_color(basics_title_label, lv_color_hex(0x0f172a), 0);
+  lv_obj_set_style_text_color(basics_title_label, color_basics_text(), 0);
   lv_obj_set_style_text_font(basics_title_label, font_title(), 0);
   lv_obj_align(basics_title_label, LV_ALIGN_TOP_LEFT, 0, 0);
 
   basics_updated_label = lv_label_create(profile_page);
-  lv_obj_set_style_text_color(basics_updated_label, lv_color_hex(0x64748b), 0);
+  lv_obj_set_style_text_color(basics_updated_label, color_meta_title(), 0);
   lv_obj_set_style_text_font(basics_updated_label, font_meta(), 0);
   lv_obj_align(basics_updated_label, LV_ALIGN_TOP_RIGHT, 0, 1);
 
