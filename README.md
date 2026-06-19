@@ -4,6 +4,20 @@ A small stock ticker project for the Waveshare `ESP32-S3-LCD-1.47B` board.
 
 It displays US stock quotes on the 1.47 inch LCD in a compact landscape layout and switches symbols with the onboard buttons.
 
+## 中文说明
+
+这是一个基于微雪 `ESP32-S3-LCD-1.47B` 开发板的小屏幕美股行情项目。
+
+它的特点是：
+
+- 1.47 寸横屏显示单只股票卡片
+- 通过板载两个按键切换股票
+- 后台每 60 秒自动刷新
+- 刷新失败时保留上一笔成功价格
+- 适合放在桌面当作迷你信息屏
+
+目前项目使用本地代理方式获取 Finnhub 数据，这样比 ESP32 直接请求外网更稳定。
+
 ## Demo
 
 ![ESP32 stock ticker demo](images/demo.jpg)
@@ -26,6 +40,13 @@ It displays US stock quotes on the 1.47 inch LCD in a compact landscape layout a
 - NVDA
 - AVGO
 - TSM
+
+## Controls
+
+- Button 1: previous symbol
+- Button 2: next symbol
+
+The screen shows one symbol at a time, with a page indicator such as `2/6` in the top-right corner.
 
 ## Hardware
 
@@ -127,6 +148,20 @@ Open:
 
 Then compile and upload from Arduino IDE.
 
+## Quick Start in Chinese
+
+1. 把 `Secrets.example.h` 复制成 `Secrets.h`
+2. 在 `Secrets.h` 里填好 WiFi 和代理地址
+3. 把 `proxy/proxy-secrets.example.json` 复制成 `proxy/proxy-secrets.json`
+4. 在 `proxy/proxy-secrets.json` 里填好 Finnhub API Key
+5. 双击运行 `proxy/start-stock-proxy.cmd`
+6. 在 Arduino IDE 打开 `LVGL_Arduino.ino`
+7. 选择 `ESP32S3 Dev Module`
+8. 分区方案选大一点，比如 `Huge APP`
+9. 编译并上传到开发板
+
+如果屏幕亮起并显示股票卡片，就说明已经跑起来了。
+
 ## Proxy API
 
 The ESP32 reads data from:
@@ -195,6 +230,20 @@ Open Arduino Serial Monitor at `115200` and check:
 - WiFi connection logs
 - stock request logs
 - HTTP return codes
+
+## Known Issues
+
+- Direct HTTPS access from ESP32 to public stock APIs may become unstable over time
+- Some WiFi environments may need a fixed local IP for the proxy computer
+- If the proxy computer is turned off, the board can only keep the last cached quote on screen
+
+## Roadmap
+
+- add more symbols through a simpler config file
+- support a second screen style
+- show market open/close status
+- try a more reliable upstream data source
+- continue optimizing long-running refresh stability
 
 ## Screenshot
 
