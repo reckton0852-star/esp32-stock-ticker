@@ -2,7 +2,7 @@
 
 A compact US stock ticker for the Waveshare `ESP32-S3-LCD-1.47B` board.
 
-It shows one stock at a time on the 1.47 inch LCD, supports button switching, dual-page viewing, automatic symbol rotation, and a local quote proxy for more stable updates.
+It shows one stock at a time on the 1.47 inch LCD, supports button switching, dual-page viewing, automatic symbol rotation, and either a local or cloud quote proxy for more stable updates.
 
 ## Demo
 
@@ -24,6 +24,9 @@ It shows one stock at a time on the 1.47 inch LCD, supports button switching, du
 - Down = green box, green LED
 - WiFi fallback between multiple saved networks
 - Local Node.js proxy for stable Finnhub access
+- Cloudflare Worker proxy option so the ESP32 does not depend on your computer staying on
+- Cloudflare custom domain support, for example `https://stock.your-domain.com`
+- VPS HTTP proxy option for the best ESP32 compatibility
 
 ## Current Symbols
 
@@ -60,17 +63,35 @@ The second page currently shows:
 - `Secrets.example.h`: template for local WiFi and proxy settings
 - `proxy/stock-proxy.js`: local Node.js proxy for Finnhub
 - `proxy/start-stock-proxy.cmd`: one-click proxy launcher on Windows
+- `proxy/cloudflare-worker/`: cloud relay version for public deployment
+- `proxy/VPS-DEPLOY.md`: VPS deployment guide
 
-## Why Use a Local Proxy
+## Why Use a Proxy
 
 Direct HTTPS requests from the ESP32 were not stable enough during repeated refreshes.
 
-The local proxy helps by:
+Both proxy modes help by:
 
-- requesting Finnhub from your computer instead of the ESP32
+- requesting Finnhub outside the ESP32
 - caching quote and company profile data
 - giving the ESP32 a simpler local HTTP endpoint
 - reducing network and memory pressure on the board
+
+### Local Proxy
+
+Use this if:
+
+- you are testing on your own computer
+- you want the quickest setup
+- you do not mind keeping the computer running
+
+### Cloud Proxy
+
+Use this if:
+
+- you do not want to keep your computer on
+- you want the ESP32 to work anywhere with WiFi
+- you want a public HTTPS endpoint
 
 ## Setup
 
@@ -96,7 +117,7 @@ In your Arduino LVGL library `lv_conf.h`, enable these fonts:
 
 The project will automatically prefer larger fonts when they are enabled.
 
-### 3. ESP32 Local Config
+### 3. ESP32 Config
 
 Copy:
 
@@ -107,9 +128,15 @@ Secrets.example.h -> Secrets.h
 Then edit `Secrets.h` and fill in:
 
 - your WiFi credentials
-- your proxy address, for example `http://192.168.31.118:8787`
+- your proxy address
 
-### 4. Proxy Local Config
+Examples:
+
+- local proxy: `http://192.168.31.118:8787`
+- cloud proxy via custom domain: `https://stock.your-domain.com`
+- cloud proxy via workers.dev: `https://your-worker-name.your-subdomain.workers.dev`
+
+### 4. Local Proxy Config
 
 Copy:
 
@@ -123,7 +150,7 @@ Then edit `proxy/proxy-secrets.json` and fill in:
 - host and port if needed
 - refresh interval if needed
 
-### 5. Start the Proxy
+### 5. Start the Local Proxy
 
 On Windows, double-click:
 
@@ -137,7 +164,13 @@ Default health check:
 http://127.0.0.1:8787/health
 ```
 
-### 6. Upload to the Board
+### 6. Cloudflare Worker Option
+
+If you prefer a cloud relay instead of a local proxy, use:
+
+[cloudflare-worker README](C:/Users/reckt/Documents/ESP32-weixue-1.4inch/official-demo/Arduino/examples/Stock_Ticker/LVGL_Arduino/proxy/cloudflare-worker/README.md)
+
+### 7. Upload to the Board
 
 Open:
 
@@ -149,11 +182,12 @@ Then compile and upload from Arduino IDE.
 
 1. Copy `Secrets.example.h` to `Secrets.h`
 2. Fill in WiFi and proxy address in `Secrets.h`
-3. Copy `proxy/proxy-secrets.example.json` to `proxy/proxy-secrets.json`
-4. Fill in your Finnhub API key
-5. Start `proxy/start-stock-proxy.cmd`
-6. Open `LVGL_Arduino.ino` in Arduino IDE
-7. Upload to the board
+3. Choose one proxy mode:
+   - local Node proxy
+   - Cloudflare Worker
+4. Fill in the matching proxy URL
+5. Open `LVGL_Arduino.ino` in Arduino IDE
+6. Upload to the board
 
 ## Proxy API
 
@@ -188,7 +222,7 @@ Example response:
 
 - `Secrets.h` is ignored by Git and should stay local
 - `proxy/proxy-secrets.json` is ignored by Git and should stay local
-- if the proxy is not running, the board keeps the last successful quote on screen
+- if the selected proxy is unavailable, the board keeps the last successful quote on screen
 - if a refresh fails, the old price is not cleared
 
 ## Troubleshooting
@@ -221,6 +255,12 @@ Check these items:
 - `STOCK_PROXY_BASE_URL` matches your computer IP and port
 - your Finnhub API key is valid
 
+If you are using the Cloudflare Worker instead of the local proxy, check:
+
+- `https://your-domain-or-worker/health` opens in a browser
+- `https://your-domain-or-worker/quote?symbol=AAPL` returns JSON
+- `STOCK_PROXY_BASE_URL` exactly matches that HTTPS base URL
+
 ### WiFi connected but no updates
 
 Open Arduino Serial Monitor at `115200` and check:
@@ -232,7 +272,7 @@ Open Arduino Serial Monitor at `115200` and check:
 ## Known Issues
 
 - Direct HTTPS access from ESP32 to public stock APIs can still be fragile on small devices
-- If the proxy computer is turned off, the board can only show the last cached quote
+- If you use the local proxy and the proxy computer is turned off, the board can only show the last cached quote
 
 ## Roadmap
 

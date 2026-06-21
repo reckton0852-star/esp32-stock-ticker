@@ -1,0 +1,6 @@
+name = "reckton-stock-proxy"
+main = "worker.js"
+compatibility_date = "2026-06-20"
+
+[vars]
+CACHE_TTL_SECONDS = "55"

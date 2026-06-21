@@ -10,4 +10,4 @@ static const WifiCredential WIFI_CREDENTIALS[] = {
   {"your_office_wifi_ssid", "your_office_wifi_password"},
 };
 
-static const char * STOCK_PROXY_BASE_URL = "http://your-computer-ip:8787";
+static const char * STOCK_PROXY_BASE_URL = "https://stock.your-domain.com";

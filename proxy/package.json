@@ -1,0 +1,13 @@
+{
+  "name": "esp32-stock-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Stock proxy for ESP32 stock ticker",
+  "main": "stock-proxy.js",
+  "scripts": {
+    "start": "node stock-proxy.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

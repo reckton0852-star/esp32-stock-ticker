@@ -1,0 +1,15 @@
+[Unit]
+Description=ESP32 Stock Proxy
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/esp32-stock-proxy
+ExecStart=/usr/bin/node /opt/esp32-stock-proxy/stock-proxy.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

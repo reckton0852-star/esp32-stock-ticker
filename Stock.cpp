@@ -3,6 +3,7 @@
 #include "Secrets.h"
 #include <HTTPClient.h>
 #include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 
 static const uint32_t STOCK_HTTP_TIMEOUT_MS = 4000;
 static const uint32_t STOCK_REQUEST_WATCHDOG_MS = 12000;
@@ -31,6 +32,24 @@ static TaskHandle_t stock_task_handle = NULL;
 
 static bool start_stock_task(size_t index);
 static void finish_stock_request(StockQuote * quote);
+
+static const char * http_error_text(int code)
+{
+  switch(code) {
+    case HTTPC_ERROR_CONNECTION_REFUSED: return "connection refused";
+    case HTTPC_ERROR_SEND_HEADER_FAILED: return "send header failed";
+    case HTTPC_ERROR_SEND_PAYLOAD_FAILED: return "send payload failed";
+    case HTTPC_ERROR_NOT_CONNECTED: return "not connected";
+    case HTTPC_ERROR_CONNECTION_LOST: return "connection lost";
+    case HTTPC_ERROR_NO_STREAM: return "no stream";
+    case HTTPC_ERROR_NO_HTTP_SERVER: return "no http server";
+    case HTTPC_ERROR_TOO_LESS_RAM: return "too less ram";
+    case HTTPC_ERROR_ENCODING: return "encoding";
+    case HTTPC_ERROR_STREAM_WRITE: return "stream write";
+    case HTTPC_ERROR_READ_TIMEOUT: return "read timeout";
+    default: return "unknown";
+  }
+}
 
 static bool extract_json_float(const String& payload, const char * key, float * value)
 {
@@ -127,34 +146,70 @@ static void StockTask(void * parameter)
   snprintf(url, sizeof(url),
     "%s/quote?symbol=%s",
     STOCK_PROXY_BASE_URL, quote->symbol);
-
-  WiFiClient client;
-  client.setTimeout(STOCK_HTTP_TIMEOUT_MS);
+  printf("Stock request URL: %s\r\n", url);
 
   HTTPClient http;
-  if(!http.begin(client, url)) {
-    if(!quote->ready) {
-      snprintf(quote->status, sizeof(quote->status), "HTTP begin fail");
+  bool use_https = strncmp(url, "https://", 8) == 0;
+  WiFiClient client;
+  WiFiClientSecure secure_client;
+
+  if(use_https) {
+    secure_client.setInsecure();
+    secure_client.setTimeout(STOCK_HTTP_TIMEOUT_MS);
+    secure_client.setHandshakeTimeout(12);
+    if(!http.begin(secure_client, url)) {
+      if(!quote->ready) {
+        snprintf(quote->status, sizeof(quote->status), "HTTPS begin fail");
+      }
+      char ssl_error[128] = {0};
+      secure_client.lastError(ssl_error, sizeof(ssl_error));
+      printf("HTTPS begin error %s: %s\r\n", quote->symbol, ssl_error);
+      secure_client.stop();
+      finish_stock_request(quote);
+      vTaskDelete(NULL);
+      return;
     }
-    client.stop();
-    finish_stock_request(quote);
-    vTaskDelete(NULL);
-    return;
+  } else {
+    client.setTimeout(STOCK_HTTP_TIMEOUT_MS);
+    if(!http.begin(client, url)) {
+      if(!quote->ready) {
+        snprintf(quote->status, sizeof(quote->status), "HTTP begin fail");
+      }
+      client.stop();
+      finish_stock_request(quote);
+      vTaskDelete(NULL);
+      return;
+    }
   }
 
   http.setConnectTimeout(STOCK_HTTP_TIMEOUT_MS);
   http.setTimeout(STOCK_HTTP_TIMEOUT_MS);
   http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  http.useHTTP10(true);
+  http.addHeader("Connection", "close");
+  http.setUserAgent("esp32-stock-ticker/1.0");
 
-  printf("Stock request start: %s via proxy\r\n", quote->symbol);
+  printf("Stock request start: %s via %s\r\n", quote->symbol, use_https ? "https" : "http");
   int http_code = http.GET();
   printf("Stock HTTP code %s: %d\r\n", quote->symbol, http_code);
+  if(http_code < 0) {
+    printf("Stock HTTP error %s: %s\r\n", quote->symbol, http_error_text(http_code));
+    if(use_https) {
+      char ssl_error[128] = {0};
+      secure_client.lastError(ssl_error, sizeof(ssl_error));
+      printf("Stock HTTPS detail %s: %s\r\n", quote->symbol, ssl_error);
+    }
+  }
   if(http_code != HTTP_CODE_OK) {
     if(!quote->ready) {
       snprintf(quote->status, sizeof(quote->status), "HTTP %d", http_code);
     }
     http.end();
-    client.stop();
+    if(use_https) {
+      secure_client.stop();
+    } else {
+      client.stop();
+    }
     finish_stock_request(quote);
     vTaskDelete(NULL);
     return;
@@ -162,7 +217,11 @@ static void StockTask(void * parameter)
 
   String payload = http.getString();
   http.end();
-  client.stop();
+  if(use_https) {
+    secure_client.stop();
+  } else {
+    client.stop();
+  }
 
   float price = 0.0f;
   float change = 0.0f;
@@ -281,7 +340,7 @@ static bool start_stock_task(size_t index)
   BaseType_t created = xTaskCreatePinnedToCore(
     StockTask,
     "StockTask",
-    8192,
+    16384,
     (void *)(uintptr_t)index,
     1,
     &stock_task_handle,
