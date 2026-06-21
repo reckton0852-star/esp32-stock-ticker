@@ -25,13 +25,14 @@ static size_t current_index = 0;
 static size_t auto_refresh_index = 0;
 static size_t pending_priority_index = NO_PENDING_PRIORITY;
 static size_t in_flight_index = NO_PENDING_PRIORITY;
-static uint32_t request_started_ms = 0;
 static uint32_t next_request_allowed_ms = 0;
 static bool request_in_flight = false;
-static TaskHandle_t stock_task_handle = NULL;
+static TaskHandle_t stock_worker_handle = NULL;
+static size_t pending_request_index = NO_PENDING_PRIORITY;
 
-static bool start_stock_task(size_t index);
+static bool queue_stock_request(size_t index);
 static void finish_stock_request(StockQuote * quote);
+static void StockWorkerTask(void * parameter);
 
 static const char * http_error_text(int code)
 {
@@ -128,9 +129,8 @@ static void update_timestamp(StockQuote * quote)
   }
 }
 
-static void StockTask(void * parameter)
+static void perform_stock_request(size_t index)
 {
-  size_t index = (size_t)(uintptr_t)parameter;
   StockQuote * quote = &quotes[index];
 
   if(!WIFI_Connection) {
@@ -138,7 +138,6 @@ static void StockTask(void * parameter)
       snprintf(quote->status, sizeof(quote->status), "Wi-Fi offline");
     }
     finish_stock_request(quote);
-    vTaskDelete(NULL);
     return;
   }
 
@@ -166,7 +165,6 @@ static void StockTask(void * parameter)
       printf("HTTPS begin error %s: %s\r\n", quote->symbol, ssl_error);
       secure_client.stop();
       finish_stock_request(quote);
-      vTaskDelete(NULL);
       return;
     }
   } else {
@@ -177,7 +175,6 @@ static void StockTask(void * parameter)
       }
       client.stop();
       finish_stock_request(quote);
-      vTaskDelete(NULL);
       return;
     }
   }
@@ -211,7 +208,6 @@ static void StockTask(void * parameter)
       client.stop();
     }
     finish_stock_request(quote);
-    vTaskDelete(NULL);
     return;
   }
 
@@ -275,7 +271,33 @@ static void StockTask(void * parameter)
   }
 
   finish_stock_request(quote);
-  vTaskDelete(NULL);
+}
+
+static void StockWorkerTask(void * parameter)
+{
+  (void)parameter;
+
+  for(;;) {
+    if(request_in_flight && in_flight_index < STOCK_COUNT) {
+      perform_stock_request(in_flight_index);
+      continue;
+    }
+
+    uint32_t now = millis();
+    if(!request_in_flight &&
+       pending_request_index < STOCK_COUNT &&
+       (next_request_allowed_ms == 0 || (int32_t)(now - next_request_allowed_ms) >= 0)) {
+      size_t index = pending_request_index;
+      pending_request_index = NO_PENDING_PRIORITY;
+      in_flight_index = index;
+      request_in_flight = true;
+      quotes[index].loading = true;
+      quotes[index].last_fetch_ms = now;
+      continue;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
 }
 
 static void finish_stock_request(StockQuote * quote)
@@ -285,78 +307,31 @@ static void finish_stock_request(StockQuote * quote)
   }
   request_in_flight = false;
   in_flight_index = NO_PENDING_PRIORITY;
-  request_started_ms = 0;
   next_request_allowed_ms = millis() + STOCK_REQUEST_GAP_MS;
-  stock_task_handle = NULL;
 }
 
-static void Stock_ServiceWatchdog(void)
+static bool queue_stock_request(size_t index)
 {
-  if(!request_in_flight || request_started_ms == 0) {
-    return;
+  if(index >= STOCK_COUNT) {
+    return false;
   }
 
   uint32_t now = millis();
-  if(now - request_started_ms <= STOCK_REQUEST_WATCHDOG_MS) {
-    return;
+  if(pending_request_index == index || in_flight_index == index) {
+    return false;
   }
 
-  printf("Stock request watchdog timeout\r\n");
-  if(stock_task_handle) {
-    vTaskDelete(stock_task_handle);
-  }
-
-  if(in_flight_index < STOCK_COUNT) {
-    quotes[in_flight_index].loading = false;
-  }
-
-  stock_task_handle = NULL;
-  request_in_flight = false;
-  in_flight_index = NO_PENDING_PRIORITY;
-  request_started_ms = 0;
-  next_request_allowed_ms = millis() + STOCK_REQUEST_GAP_MS;
-  WIFI_Connection = false;
-  WiFi.disconnect(false);
-}
-
-static bool start_stock_task(size_t index)
-{
   if(request_in_flight) {
+    pending_request_index = index;
     return false;
   }
 
-  uint32_t now = millis();
   if(next_request_allowed_ms != 0 && (int32_t)(now - next_request_allowed_ms) < 0) {
+    pending_request_index = index;
     return false;
   }
 
-  StockQuote * quote = &quotes[index];
-  quote->loading = true;
-  quote->last_fetch_ms = millis();
-  in_flight_index = index;
-  request_started_ms = millis();
-  request_in_flight = true;
-
-  BaseType_t created = xTaskCreatePinnedToCore(
-    StockTask,
-    "StockTask",
-    16384,
-    (void *)(uintptr_t)index,
-    1,
-    &stock_task_handle,
-    0
-  );
-
-  if(created != pdPASS) {
-    snprintf(quote->status, sizeof(quote->status), "Task fail");
-    quote->loading = false;
-    request_in_flight = false;
-    in_flight_index = NO_PENDING_PRIORITY;
-    request_started_ms = 0;
-    stock_task_handle = NULL;
-    return false;
-  }
-
+  pending_request_index = index;
   return true;
 }
 
@@ -365,6 +340,22 @@ void Stock_Init(void)
   current_index = 0;
   auto_refresh_index = 0;
   pending_priority_index = current_index;
+  pending_request_index = NO_PENDING_PRIORITY;
+  request_in_flight = false;
+  in_flight_index = NO_PENDING_PRIORITY;
+  next_request_allowed_ms = 0;
+
+  if(!stock_worker_handle) {
+    xTaskCreatePinnedToCore(
+      StockWorkerTask,
+      "StockWorkerTask",
+      16384,
+      NULL,
+      1,
+      &stock_worker_handle,
+      0
+    );
+  }
 }
 
 void Stock_Next(void)
@@ -393,25 +384,25 @@ const StockQuote * Stock_CurrentQuote(void)
 
 void Stock_RequestCurrent(void)
 {
-  if(!start_stock_task(current_index)) {
+  if(!queue_stock_request(current_index)) {
     pending_priority_index = current_index;
   }
 }
 
 bool Stock_RequestCurrentIfStale(uint32_t min_interval_ms)
 {
-  if(request_in_flight) {
-    pending_priority_index = current_index;
-    return false;
-  }
-
   StockQuote * quote = &quotes[current_index];
   uint32_t now = millis();
   if(quote->ready && min_interval_ms > 0 && quote->last_fetch_ms != 0 && now - quote->last_fetch_ms < min_interval_ms) {
     return false;
   }
 
-  return start_stock_task(current_index);
+  if(request_in_flight) {
+    pending_priority_index = current_index;
+    return false;
+  }
+
+  return queue_stock_request(current_index);
 }
 
 static bool quote_needs_refresh(const StockQuote * quote, uint32_t now, uint32_t refresh_interval_ms, uint32_t retry_interval_ms)
@@ -422,8 +413,6 @@ static bool quote_needs_refresh(const StockQuote * quote, uint32_t now, uint32_t
 
 void Stock_ServiceAutoRefresh(uint32_t refresh_interval_ms, uint32_t retry_interval_ms)
 {
-  Stock_ServiceWatchdog();
-
   if(request_in_flight) {
     return;
   }
@@ -432,7 +421,7 @@ void Stock_ServiceAutoRefresh(uint32_t refresh_interval_ms, uint32_t retry_inter
   if(pending_priority_index < STOCK_COUNT) {
     size_t index = pending_priority_index;
     pending_priority_index = NO_PENDING_PRIORITY;
-    if(start_stock_task(index)) {
+    if(queue_stock_request(index)) {
       printf("Stock priority refresh: %s\r\n", quotes[index].symbol);
       return;
     }
@@ -442,7 +431,7 @@ void Stock_ServiceAutoRefresh(uint32_t refresh_interval_ms, uint32_t retry_inter
     size_t index = (auto_refresh_index + step) % STOCK_COUNT;
     StockQuote * quote = &quotes[index];
     if(quote_needs_refresh(quote, now, refresh_interval_ms, retry_interval_ms)) {
-      if(start_stock_task(index)) {
+      if(queue_stock_request(index)) {
         auto_refresh_index = (index + 1) % STOCK_COUNT;
         printf("Stock auto refresh: %s\r\n", quote->symbol);
         return;
