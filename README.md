@@ -4,6 +4,16 @@ A compact US stock ticker for the Waveshare `ESP32-S3-LCD-1.47B` board.
 
 It shows one stock at a time on the 1.47 inch LCD, supports button switching, dual-page viewing, automatic symbol rotation, and either a local or cloud quote proxy for more stable updates.
 
+## Current Release
+
+This version adds a more product-like boot flow:
+
+- 3 second boot splash screen
+- WiFi bootstrap page during startup
+- automatic connect across multiple saved WiFi networks
+- automatic fallback to setup mode when WiFi cannot connect
+- built-in hotspot + browser setup page for WiFi and stock configuration
+
 ## Demo
 
 ![ESP32 stock ticker demo](images/demo.jpg)
@@ -23,6 +33,10 @@ It shows one stock at a time on the 1.47 inch LCD, supports button switching, du
 - Up = red box, red LED
 - Down = green box, green LED
 - WiFi fallback between multiple saved networks
+- Boot splash screen and WiFi bootstrap UI
+- Setup mode hotspot: `Reckton-Stock-Setup`
+- Browser configuration page at `http://192.168.4.1`
+- Configurable WiFi list, proxy URL, symbols, brightness, refresh time, rotate time
 - Local Node.js proxy for stable Finnhub access
 - Cloudflare Worker proxy option so the ESP32 does not depend on your computer staying on
 - Cloudflare custom domain support, for example `https://stock.your-domain.com`
@@ -58,6 +72,8 @@ The second page currently shows:
 ## Project Structure
 
 - `LVGL_Arduino.ino`: Arduino entry file
+- `AppConfig.cpp` / `AppConfig.h`: persistent runtime settings
+- `SetupPortal.cpp` / `SetupPortal.h`: hotspot setup portal and save/reboot flow
 - `LVGL_Example.cpp`: screen layout, page switching, button behavior
 - `Stock.cpp` / `Stock.h`: quote refresh and stock data model
 - `Secrets.example.h`: template for local WiFi and proxy settings
@@ -189,6 +205,41 @@ Then compile and upload from Arduino IDE.
 5. Open `LVGL_Arduino.ino` in Arduino IDE
 6. Upload to the board
 
+## Boot Flow
+
+After power-on the device now behaves like this:
+
+1. Show boot splash for 3 seconds
+2. Show WiFi bootstrap screen
+3. Try saved WiFi credentials one by one
+4. If WiFi connects:
+   - sync time
+   - enter stock page
+5. If WiFi fails:
+   - start hotspot `Reckton-Stock-Setup`
+   - open setup UI on `http://192.168.4.1`
+
+You can also long press the `BOOT` button while running to enter setup mode manually.
+
+## Setup Mode
+
+When setup mode starts:
+
+- the board creates hotspot `Reckton-Stock-Setup`
+- your phone or computer can connect to it
+- open `http://192.168.4.1`
+- save settings
+- the board reboots automatically
+
+The setup page currently supports:
+
+- up to 3 saved WiFi networks
+- proxy base URL
+- stock symbols list
+- refresh interval
+- auto rotate interval
+- display brightness
+
 ## Proxy API
 
 The ESP32 reads data from:
@@ -224,6 +275,7 @@ Example response:
 - `proxy/proxy-secrets.json` is ignored by Git and should stay local
 - if the selected proxy is unavailable, the board keeps the last successful quote on screen
 - if a refresh fails, the old price is not cleared
+- for best ESP32 stability this project prefers HTTP from ESP32 to your proxy/custom domain
 
 ## Troubleshooting
 
@@ -268,6 +320,16 @@ Open Arduino Serial Monitor at `115200` and check:
 - WiFi connection logs
 - stock request logs
 - HTTP return codes
+
+### Device enters setup mode on boot
+
+This usually means:
+
+- no saved WiFi is currently available
+- saved password is wrong
+- proxy URL is empty or invalid after reconfiguration
+
+Connect to hotspot `Reckton-Stock-Setup` and open `http://192.168.4.1` to fix settings.
 
 ## Known Issues
 

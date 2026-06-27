@@ -2,6 +2,7 @@
 #include "Button_Driver.h"
 #include "RGB_lamp.h"
 #include "Stock.h"
+#include "AppConfig.h"
 
 lv_obj_t * tv = NULL;
 lv_obj_t *Page_panel[50] = {0};
@@ -9,11 +10,9 @@ lv_obj_t *Simulated_panel1[100] = {0};
 size_t Simulated_panel1_Size = 0;
 
 static lv_timer_t * app_timer = NULL;
-static const uint32_t STOCK_REFRESH_INTERVAL_MS = 60000;
+static uint32_t stock_refresh_interval_ms = 60000;
 static const uint32_t STOCK_RETRY_INTERVAL_MS = 15000;
-static const uint32_t WIFI_RETRY_INTERVAL_MS = 10000;
-static const uint32_t AUTO_SYMBOL_INTERVAL_MS = 12000;
-static uint32_t last_wifi_retry_ms = 0;
+static uint32_t auto_symbol_interval_ms = 12000;
 static uint32_t last_auto_symbol_ms = 0;
 static uint8_t current_view_mode = 0;
 
@@ -180,16 +179,16 @@ static const lv_font_t * font_meta_value(void)
 static void apply_rgb_for_quote(const StockQuote * quote)
 {
   if(!quote || (quote->loading && !quote->ready)) {
-    Set_Color(0, 56, 96);
+    Set_Color(0, 20, 36);
     return;
   }
 
   if(quote->change > 0.001f) {
-    Set_Color(180, 0, 0);
+    Set_Color(72, 0, 0);
   } else if(quote->change < -0.001f) {
-    Set_Color(0, 160, 0);
+    Set_Color(0, 64, 0);
   } else {
-    Set_Color(72, 56, 0);
+    Set_Color(32, 24, 0);
   }
 }
 
@@ -225,14 +224,14 @@ static void mark_user_activity(void)
 static void auto_advance_symbol_if_needed(void)
 {
   uint32_t now = millis();
-  if(now - last_auto_symbol_ms < AUTO_SYMBOL_INTERVAL_MS) {
+  if(now - last_auto_symbol_ms < auto_symbol_interval_ms) {
     return;
   }
 
   last_auto_symbol_ms = now;
   Stock_Next();
   update_screen();
-  Stock_RequestCurrentIfStale(STOCK_REFRESH_INTERVAL_MS);
+  Stock_RequestCurrentIfStale(stock_refresh_interval_ms);
 }
 
 static lv_obj_t * create_meta_pair(lv_obj_t * parent, const char * title, lv_coord_t x, lv_coord_t y, lv_obj_t ** value_label, lv_coord_t width)
@@ -368,6 +367,138 @@ static void build_screen(void)
   create_meta_pair(profile_page, "IPO", 202, 62, &ipo_value_label, 82);
 }
 
+void Lvgl_ShowBootSplash(void)
+{
+  lv_obj_t * screen = lv_scr_act();
+  lv_obj_clean(screen);
+  lv_obj_set_style_bg_color(screen, lv_color_hex(0x04080f), 0);
+
+  lv_obj_t * panel = lv_obj_create(screen);
+  lv_obj_set_size(panel, 296, 148);
+  lv_obj_align(panel, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_radius(panel, 4, 0);
+  lv_obj_set_style_bg_color(panel, lv_color_hex(0x09121d), 0);
+  lv_obj_set_style_border_width(panel, 1, 0);
+  lv_obj_set_style_border_color(panel, lv_color_hex(0x1f3146), 0);
+  lv_obj_set_style_pad_all(panel, 12, 0);
+  lv_obj_set_style_shadow_width(panel, 0, 0);
+  lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t * accent = lv_obj_create(panel);
+  lv_obj_remove_style_all(accent);
+  lv_obj_set_size(accent, 72, 3);
+  lv_obj_align(accent, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_set_style_bg_color(accent, lv_color_hex(0x7dc4ff), 0);
+  lv_obj_set_style_bg_opa(accent, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(accent, 2, 0);
+
+  lv_obj_t * title = lv_label_create(panel);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xf4f7fb), 0);
+#if LV_FONT_MONTSERRAT_24
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+#elif LV_FONT_MONTSERRAT_20
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+#else
+  lv_obj_set_style_text_font(title, font_title(), 0);
+#endif
+  lv_label_set_text(title, "RECKTON");
+  lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 20);
+
+  lv_obj_t * subtitle = lv_label_create(panel);
+  lv_obj_set_style_text_color(subtitle, lv_color_hex(0x7dc4ff), 0);
+  lv_obj_set_style_text_font(subtitle, font_meta_value(), 0);
+  lv_label_set_text(subtitle, "Stock Terminal");
+  lv_obj_align(subtitle, LV_ALIGN_TOP_LEFT, 2, 60);
+
+  lv_obj_t * line = lv_obj_create(panel);
+  lv_obj_remove_style_all(line);
+  lv_obj_set_size(line, 272, 1);
+  lv_obj_align(line, LV_ALIGN_TOP_MID, 0, 88);
+  lv_obj_set_style_bg_color(line, lv_color_hex(0x213247), 0);
+  lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+
+  lv_obj_t * footer_left = lv_label_create(panel);
+  lv_obj_set_style_text_color(footer_left, lv_color_hex(0x90a2b9), 0);
+  lv_obj_set_style_text_font(footer_left, font_meta(), 0);
+  lv_label_set_text(footer_left, "ESP32-S3 MARKET DISPLAY");
+  lv_obj_align(footer_left, LV_ALIGN_BOTTOM_LEFT, 0, -2);
+
+  lv_obj_t * footer_right = lv_label_create(panel);
+  lv_obj_set_style_text_color(footer_right, lv_color_hex(0x5f7691), 0);
+  lv_obj_set_style_text_font(footer_right, font_meta(), 0);
+  lv_label_set_text(footer_right, "v1");
+  lv_obj_align(footer_right, LV_ALIGN_BOTTOM_RIGHT, 0, -2);
+}
+
+void Lvgl_ShowWifiScanStatus(const char * line1, const char * line2, const char * line3)
+{
+  lv_obj_t * screen = lv_scr_act();
+  lv_obj_clean(screen);
+  lv_obj_set_style_bg_color(screen, lv_color_hex(0x050c14), 0);
+
+  lv_obj_t * panel = lv_obj_create(screen);
+  lv_obj_set_size(panel, 300, 150);
+  lv_obj_align(panel, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_radius(panel, 6, 0);
+  lv_obj_set_style_bg_color(panel, lv_color_hex(0x0d1622), 0);
+  lv_obj_set_style_border_width(panel, 1, 0);
+  lv_obj_set_style_border_color(panel, lv_color_hex(0x243346), 0);
+  lv_obj_set_style_pad_all(panel, 12, 0);
+  lv_obj_set_style_shadow_width(panel, 0, 0);
+  lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t * accent = lv_obj_create(panel);
+  lv_obj_remove_style_all(accent);
+  lv_obj_set_size(accent, 66, 3);
+  lv_obj_align(accent, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_set_style_bg_color(accent, lv_color_hex(0x7dc4ff), 0);
+  lv_obj_set_style_bg_opa(accent, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(accent, 2, 0);
+
+  lv_obj_t * title = lv_label_create(panel);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xf4f7fb), 0);
+  lv_obj_set_style_text_font(title, font_title(), 0);
+  lv_label_set_text(title, "Network");
+  lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 16);
+
+  lv_obj_t * subtitle = lv_label_create(panel);
+  lv_obj_set_style_text_color(subtitle, lv_color_hex(0x7dc4ff), 0);
+  lv_obj_set_style_text_font(subtitle, font_meta(), 0);
+  lv_label_set_text(subtitle, line1 ? line1 : "WiFi Scan");
+  lv_obj_align(subtitle, LV_ALIGN_TOP_LEFT, 2, 42);
+
+  lv_obj_t * status_card = lv_obj_create(panel);
+  lv_obj_set_size(status_card, 276, 64);
+  lv_obj_align(status_card, LV_ALIGN_TOP_MID, 0, 58);
+  lv_obj_set_style_radius(status_card, 4, 0);
+  lv_obj_set_style_bg_color(status_card, lv_color_hex(0x08111b), 0);
+  lv_obj_set_style_border_width(status_card, 1, 0);
+  lv_obj_set_style_border_color(status_card, lv_color_hex(0x1d2b3d), 0);
+  lv_obj_set_style_pad_left(status_card, 12, 0);
+  lv_obj_set_style_pad_right(status_card, 12, 0);
+  lv_obj_set_style_pad_top(status_card, 10, 0);
+  lv_obj_set_style_pad_bottom(status_card, 10, 0);
+  lv_obj_set_style_shadow_width(status_card, 0, 0);
+  lv_obj_clear_flag(status_card, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t * status1 = lv_label_create(status_card);
+  lv_obj_set_style_text_color(status1, lv_color_hex(0xf4f7fb), 0);
+  lv_obj_set_style_text_font(status1, font_meta_value(), 0);
+  lv_label_set_long_mode(status1, LV_LABEL_LONG_CLIP);
+  lv_obj_set_width(status1, 246);
+  lv_label_set_text(status1, line2 ? line2 : "");
+  lv_obj_align(status1, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  lv_obj_t * status2 = lv_label_create(status_card);
+  lv_obj_set_style_text_color(status2, lv_color_hex(0x90a2b9), 0);
+  lv_obj_set_style_text_font(status2, font_meta(), 0);
+  lv_label_set_long_mode(status2, LV_LABEL_LONG_CLIP);
+  lv_obj_set_width(status2, 246);
+  lv_label_set_text(status2, line3 ? line3 : "");
+  lv_obj_align(status2, LV_ALIGN_TOP_LEFT, 0, 30);
+
+}
+
 static void update_screen(void)
 {
   const StockQuote * quote = Stock_CurrentQuote();
@@ -381,7 +512,7 @@ static void update_screen(void)
   lv_label_set_text(company_label, quote->name);
   snprintf(buffer, sizeof(buffer), "%u/%u P%u",
     (unsigned)(Stock_CurrentIndex() + 1),
-    (unsigned)STOCK_COUNT,
+    (unsigned)Stock_ActiveCount(),
     (unsigned)(current_view_mode + 1));
   lv_label_set_text(page_label, buffer);
 
@@ -440,7 +571,7 @@ static void handle_button_action(void)
     mark_user_activity();
     Stock_Next();
     update_screen();
-    Stock_RequestCurrentIfStale(STOCK_REFRESH_INTERVAL_MS);
+    Stock_RequestCurrentIfStale(stock_refresh_interval_ms);
   } else if(BOOT_KEY_State == DoubleClick) {
     mark_user_activity();
     current_view_mode = (current_view_mode + 1) % 2;
@@ -450,7 +581,7 @@ static void handle_button_action(void)
     mark_user_activity();
     Stock_Previous();
     update_screen();
-    Stock_RequestCurrentIfStale(STOCK_REFRESH_INTERVAL_MS);
+    Stock_RequestCurrentIfStale(stock_refresh_interval_ms);
   }
 
   BOOT_KEY_State = None;
@@ -460,18 +591,8 @@ void IRAM_ATTR example1_increase_lvgl_tick(lv_timer_t * t)
 {
   (void)t;
   handle_button_action();
-
-  bool wifi_ready = WIFI_Connection;
-  if(!wifi_ready) {
-    uint32_t now = millis();
-    if(now - last_wifi_retry_ms > WIFI_RETRY_INTERVAL_MS) {
-      last_wifi_retry_ms = now;
-      wifi_ready = Wireless_EnsureConnected();
-    }
-  }
-
-  if(wifi_ready) {
-    Stock_ServiceAutoRefresh(STOCK_REFRESH_INTERVAL_MS, STOCK_RETRY_INTERVAL_MS);
+  if(WIFI_Connection) {
+    Stock_ServiceAutoRefresh(stock_refresh_interval_ms, STOCK_RETRY_INTERVAL_MS);
   }
 
   auto_advance_symbol_if_needed();
@@ -482,9 +603,55 @@ void Lvgl_Example1(void)
 {
   current_view_mode = 0;
   last_auto_symbol_ms = millis();
+  stock_refresh_interval_ms = (uint32_t)AppConfig_Get()->refresh_seconds * 1000UL;
+  auto_symbol_interval_ms = (uint32_t)AppConfig_Get()->rotate_seconds * 1000UL;
   build_screen();
   update_screen();
   app_timer = lv_timer_create(example1_increase_lvgl_tick, 250, NULL);
+}
+
+void Lvgl_ShowSetupMode(const char * ap_ssid, const char * ap_ip)
+{
+  char buffer[96];
+  lv_obj_t * screen = lv_scr_act();
+  lv_obj_clean(screen);
+  lv_obj_set_style_bg_color(screen, lv_color_hex(0x08111c), 0);
+
+  lv_obj_t * panel = lv_obj_create(screen);
+  lv_obj_set_size(panel, 300, 150);
+  lv_obj_align(panel, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_radius(panel, 6, 0);
+  lv_obj_set_style_bg_color(panel, lv_color_hex(0x101b2a), 0);
+  lv_obj_set_style_border_width(panel, 1, 0);
+  lv_obj_set_style_border_color(panel, lv_color_hex(0x243346), 0);
+  lv_obj_set_style_pad_all(panel, 12, 0);
+  lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t * title = lv_label_create(panel);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xf4f7fb), 0);
+  lv_obj_set_style_text_font(title, font_title(), 0);
+  lv_label_set_text(title, "SETUP MODE");
+  lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  lv_obj_t * line1 = lv_label_create(panel);
+  lv_obj_set_style_text_color(line1, lv_color_hex(0x7dc4ff), 0);
+  lv_obj_set_style_text_font(line1, font_meta_value(), 0);
+  snprintf(buffer, sizeof(buffer), "WiFi: %s", ap_ssid ? ap_ssid : "Reckton-Stock-Setup");
+  lv_label_set_text(line1, buffer);
+  lv_obj_align(line1, LV_ALIGN_TOP_LEFT, 0, 32);
+
+  lv_obj_t * line2 = lv_label_create(panel);
+  lv_obj_set_style_text_color(line2, lv_color_hex(0xe7edf7), 0);
+  lv_obj_set_style_text_font(line2, font_meta_value(), 0);
+  snprintf(buffer, sizeof(buffer), "Open: http://%s", ap_ip ? ap_ip : "192.168.4.1");
+  lv_label_set_text(line2, buffer);
+  lv_obj_align(line2, LV_ALIGN_TOP_LEFT, 0, 58);
+
+  lv_obj_t * line3 = lv_label_create(panel);
+  lv_obj_set_style_text_color(line3, lv_color_hex(0x90a2b9), 0);
+  lv_obj_set_style_text_font(line3, font_meta(), 0);
+  lv_label_set_text(line3, "Save in browser, then device reboots.");
+  lv_obj_align(line3, LV_ALIGN_TOP_LEFT, 0, 96);
 }
 
 void Lvgl_Example1_close(void)

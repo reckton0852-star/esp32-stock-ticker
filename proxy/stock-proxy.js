@@ -11,6 +11,15 @@ const symbols = [
   { symbol: "TSM", name: "TSMC", status: "NYSE - USD" },
 ];
 
+function resolveSymbol(symbol) {
+  for (const item of symbols) {
+    if (item.symbol === symbol) {
+      return item;
+    }
+  }
+  return { symbol, name: symbol, status: "US - USD" };
+}
+
 const configPath = path.join(__dirname, "proxy-secrets.json");
 if (!fs.existsSync(configPath)) {
   throw new Error("Missing proxy-secrets.json. Copy proxy-secrets.example.json first.");
@@ -213,8 +222,30 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === "/quote") {
     const symbol = (url.searchParams.get("symbol") || "").toUpperCase();
-    if (!cache.has(symbol)) {
+    if (!symbol) {
       return json(res, 404, { error: "Unknown symbol" });
+    }
+    if (!cache.has(symbol)) {
+      const item = resolveSymbol(symbol);
+      cache.set(symbol, {
+        symbol: item.symbol,
+        name: item.name,
+        status: item.status,
+        c: 0,
+        d: 0,
+        dp: 0,
+        updated_at: "--:--",
+        industry: "-",
+        country: "-",
+        ipo: "-",
+        market_cap: "-",
+        shares_out: "-",
+        ready: false,
+        error: "",
+      });
+      refreshSymbol(item).catch((error) => {
+        console.log(`[ERR] ${item.symbol}: ${error.message || error}`);
+      });
     }
     return json(res, 200, cache.get(symbol));
   }

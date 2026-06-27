@@ -12,7 +12,7 @@
 #define EXAMPLE_PIN_NUM_LCD_DC         41
 #define EXAMPLE_PIN_NUM_LCD_RST        39
 #define EXAMPLE_PIN_NUM_BK_LIGHT       46
-#define Frequency       1000                    // PWM frequencyconst 
+#define Frequency       20000                   // PWM frequency
 #define Resolution      10                         
 #define Backlight_MAX   100     
 

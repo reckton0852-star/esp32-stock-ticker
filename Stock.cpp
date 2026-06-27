@@ -1,25 +1,29 @@
 #include "Stock.h"
 #include "Wireless.h"
-#include "Secrets.h"
+#include "AppConfig.h"
 #include <HTTPClient.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
+#include <ctype.h>
 
 static const uint32_t STOCK_HTTP_TIMEOUT_MS = 4000;
-static const uint32_t STOCK_REQUEST_WATCHDOG_MS = 12000;
 static const uint32_t STOCK_REQUEST_GAP_MS = 2000;
-
-static StockQuote quotes[] = {
-  {"WDC", "W. Digital", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
-  {"MU", "Micron", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
-  {"AAPL", "Apple", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
-  {"NVDA", "NVIDIA", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
-  {"AVGO", "Broadcom", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
-  {"TSM", "TSMC", 0.0f, 0.0f, 0.0f, false, false, false, "Waiting", "--:--", "-", "-", "-", "-", "-", 0},
-};
-
-const size_t STOCK_COUNT = sizeof(quotes) / sizeof(quotes[0]);
+static const size_t MAX_STOCK_COUNT = 8;
+static StockQuote quotes[MAX_STOCK_COUNT];
+const size_t STOCK_COUNT = MAX_STOCK_COUNT;
 static const size_t NO_PENDING_PRIORITY = (size_t)-1;
+static size_t stock_count = 0;
+
+static const char * known_name(const char * symbol)
+{
+  if(strcmp(symbol, "WDC") == 0) return "W. Digital";
+  if(strcmp(symbol, "MU") == 0) return "Micron";
+  if(strcmp(symbol, "AAPL") == 0) return "Apple";
+  if(strcmp(symbol, "NVDA") == 0) return "NVIDIA";
+  if(strcmp(symbol, "AVGO") == 0) return "Broadcom";
+  if(strcmp(symbol, "TSM") == 0) return "TSMC";
+  return NULL;
+}
 
 static size_t current_index = 0;
 static size_t auto_refresh_index = 0;
@@ -33,6 +37,21 @@ static size_t pending_request_index = NO_PENDING_PRIORITY;
 static bool queue_stock_request(size_t index);
 static void finish_stock_request(StockQuote * quote);
 static void StockWorkerTask(void * parameter);
+
+static void reset_quote(StockQuote * quote, const char * symbol)
+{
+  memset(quote, 0, sizeof(*quote));
+  quote->symbol = strdup(symbol);
+  const char * pretty_name = known_name(symbol);
+  quote->name = pretty_name ? strdup(pretty_name) : quote->symbol;
+  snprintf(quote->status, sizeof(quote->status), "Waiting");
+  snprintf(quote->updated_at, sizeof(quote->updated_at), "--:--");
+  snprintf(quote->industry, sizeof(quote->industry), "-");
+  snprintf(quote->country, sizeof(quote->country), "-");
+  snprintf(quote->ipo, sizeof(quote->ipo), "-");
+  snprintf(quote->market_cap, sizeof(quote->market_cap), "-");
+  snprintf(quote->shares_out, sizeof(quote->shares_out), "-");
+}
 
 static const char * http_error_text(int code)
 {
@@ -144,7 +163,7 @@ static void perform_stock_request(size_t index)
   char url[192];
   snprintf(url, sizeof(url),
     "%s/quote?symbol=%s",
-    STOCK_PROXY_BASE_URL, quote->symbol);
+    Stock_ProxyBaseUrl(), quote->symbol);
   printf("Stock request URL: %s\r\n", url);
 
   HTTPClient http;
@@ -278,14 +297,14 @@ static void StockWorkerTask(void * parameter)
   (void)parameter;
 
   for(;;) {
-    if(request_in_flight && in_flight_index < STOCK_COUNT) {
+    if(request_in_flight && in_flight_index < stock_count) {
       perform_stock_request(in_flight_index);
       continue;
     }
 
     uint32_t now = millis();
     if(!request_in_flight &&
-       pending_request_index < STOCK_COUNT &&
+       pending_request_index < stock_count &&
        (next_request_allowed_ms == 0 || (int32_t)(now - next_request_allowed_ms) >= 0)) {
       size_t index = pending_request_index;
       pending_request_index = NO_PENDING_PRIORITY;
@@ -312,7 +331,7 @@ static void finish_stock_request(StockQuote * quote)
 
 static bool queue_stock_request(size_t index)
 {
-  if(index >= STOCK_COUNT) {
+  if(index >= stock_count) {
     return false;
   }
 
@@ -345,6 +364,37 @@ void Stock_Init(void)
   in_flight_index = NO_PENDING_PRIORITY;
   next_request_allowed_ms = 0;
 
+  const AppConfigData * config = AppConfig_Get();
+  char symbols[APP_SYMBOLS_MAX];
+  snprintf(symbols, sizeof(symbols), "%s", config->stock_symbols);
+
+  for(size_t i = 0; i < MAX_STOCK_COUNT; i++) {
+    memset(&quotes[i], 0, sizeof(quotes[i]));
+  }
+
+  stock_count = 0;
+  char * token = strtok(symbols, ",");
+  while(token && stock_count < MAX_STOCK_COUNT) {
+    while(*token == ' ' || *token == '\t') token++;
+    size_t len = strlen(token);
+    while(len > 0 && (token[len - 1] == ' ' || token[len - 1] == '\t' || token[len - 1] == '\r' || token[len - 1] == '\n')) {
+      token[--len] = '\0';
+    }
+    if(len > 0) {
+      for(size_t j = 0; j < len; j++) {
+        token[j] = (char)toupper((unsigned char)token[j]);
+      }
+      reset_quote(&quotes[stock_count], token);
+      stock_count++;
+    }
+    token = strtok(NULL, ",");
+  }
+
+  if(stock_count == 0) {
+    reset_quote(&quotes[0], "WDC");
+    stock_count = 1;
+  }
+
   if(!stock_worker_handle) {
     xTaskCreatePinnedToCore(
       StockWorkerTask,
@@ -360,13 +410,19 @@ void Stock_Init(void)
 
 void Stock_Next(void)
 {
-  current_index = (current_index + 1) % STOCK_COUNT;
+  if(stock_count == 0) {
+    return;
+  }
+  current_index = (current_index + 1) % stock_count;
 }
 
 void Stock_Previous(void)
 {
+  if(stock_count == 0) {
+    return;
+  }
   if(current_index == 0) {
-    current_index = STOCK_COUNT - 1;
+    current_index = stock_count - 1;
   } else {
     current_index--;
   }
@@ -375,6 +431,11 @@ void Stock_Previous(void)
 size_t Stock_CurrentIndex(void)
 {
   return current_index;
+}
+
+size_t Stock_ActiveCount(void)
+{
+  return stock_count;
 }
 
 const StockQuote * Stock_CurrentQuote(void)
@@ -418,7 +479,7 @@ void Stock_ServiceAutoRefresh(uint32_t refresh_interval_ms, uint32_t retry_inter
   }
 
   uint32_t now = millis();
-  if(pending_priority_index < STOCK_COUNT) {
+  if(pending_priority_index < stock_count) {
     size_t index = pending_priority_index;
     pending_priority_index = NO_PENDING_PRIORITY;
     if(queue_stock_request(index)) {
@@ -427,15 +488,20 @@ void Stock_ServiceAutoRefresh(uint32_t refresh_interval_ms, uint32_t retry_inter
     }
   }
 
-  for(size_t step = 0; step < STOCK_COUNT; step++) {
-    size_t index = (auto_refresh_index + step) % STOCK_COUNT;
+  for(size_t step = 0; step < stock_count; step++) {
+    size_t index = (auto_refresh_index + step) % stock_count;
     StockQuote * quote = &quotes[index];
     if(quote_needs_refresh(quote, now, refresh_interval_ms, retry_interval_ms)) {
       if(queue_stock_request(index)) {
-        auto_refresh_index = (index + 1) % STOCK_COUNT;
+        auto_refresh_index = (index + 1) % stock_count;
         printf("Stock auto refresh: %s\r\n", quote->symbol);
         return;
       }
     }
   }
+}
+
+const char * Stock_ProxyBaseUrl(void)
+{
+  return AppConfig_Get()->proxy_base_url;
 }

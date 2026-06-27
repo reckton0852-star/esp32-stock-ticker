@@ -9,6 +9,14 @@ const symbols = [
 
 const symbolMap = new Map(symbols.map((item) => [item.symbol, item]));
 
+function resolveSymbol(symbol) {
+  const known = symbolMap.get(symbol);
+  if (known) {
+    return known;
+  }
+  return { symbol, name: symbol, status: "US - USD" };
+}
+
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -128,10 +136,10 @@ export default {
 
     if (url.pathname === "/quote") {
       const symbol = (url.searchParams.get("symbol") || "").toUpperCase();
-      const item = symbolMap.get(symbol);
-      if (!item) {
+      if (!symbol) {
         return json({ error: "Unknown symbol" }, 404);
       }
+      const item = resolveSymbol(symbol);
       try {
         return await cachedQuote(item, request, env);
       } catch (error) {
