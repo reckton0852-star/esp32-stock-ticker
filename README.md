@@ -2,7 +2,7 @@
 
 A compact US stock ticker for the Waveshare `ESP32-S3-LCD-1.47B` board.
 
-It shows one stock at a time on the 1.47 inch LCD, supports button switching, dual-page viewing, automatic symbol rotation, and either a local or cloud quote proxy for more stable updates.
+It shows one market item at a time on the 1.47 inch LCD, supports button switching, four-page viewing, automatic symbol rotation, and either a local or cloud proxy for more stable updates.
 
 ## Current Release
 
@@ -12,7 +12,8 @@ This version adds a more product-like boot flow:
 - WiFi bootstrap page during startup
 - automatic connect across multiple saved WiFi networks
 - automatic fallback to setup mode when WiFi cannot connect
-- built-in hotspot + browser setup page for WiFi and stock configuration
+- built-in hotspot + browser setup page for WiFi, stock, and FX configuration
+- optional Stocks / FX display mode
 
 ## Demo
 
@@ -21,12 +22,13 @@ This version adds a more product-like boot flow:
 ## Features
 
 - Landscape stock card UI for the 1.47 inch LCD
-- Dual-page mode:
+- Two-page mode:
   - Page 1: quote, change percent, market, update time
-  - Page 2: company basics
+  - Page 2: 30 day trend line
 - Single click: next symbol
 - Long press: previous symbol
-- Double click: switch between quote page and basics page
+- Double click: switch between quote page and 30D trend page
+- Any button action pauses automatic symbol rotation for 30 seconds
 - Automatic background refresh every 60 seconds
 - Automatic symbol rotation every 12 seconds
 - Keeps the last successful price on screen while refreshing
@@ -36,13 +38,16 @@ This version adds a more product-like boot flow:
 - Boot splash screen and WiFi bootstrap UI
 - Setup mode hotspot: `Reckton-Stock-Setup`
 - Browser configuration page at `http://192.168.4.1`
-- Configurable WiFi list, proxy URL, symbols, brightness, refresh time, rotate time
+- Configurable WiFi list, display mode, proxy URL, symbols, FX bases, brightness, refresh time, rotate time
 - Local Node.js proxy for stable Finnhub access
 - Cloudflare Worker proxy option so the ESP32 does not depend on your computer staying on
 - Cloudflare custom domain support, for example `https://stock.your-domain.com`
 - VPS HTTP proxy option for the best ESP32 compatibility
+- Low-power defaults: RGB LED disabled and IMU powered down
 
 ## Current Symbols
+
+Stocks mode:
 
 - WDC
 - MU
@@ -51,15 +56,21 @@ This version adds a more product-like boot flow:
 - AVGO
 - TSM
 
-## Page 2 Basics
+FX mode:
 
-The second page currently shows:
+- USD/CNY
+- EUR/CNY
+- GBP/CNY
+- CAD/CNY
 
-- Industry
-- Country
-- Market Cap
-- Shares Outstanding
-- IPO Date
+## Pages
+
+The screen has two pages:
+
+- P1 Price: quote, change percent, market, update time
+- P2 30D Trend: recent 30 point history line with start, high, low, latest values
+
+FX data is daily reference data from Frankfurter. It is useful for a desktop reference screen, not for trading-grade realtime FX.
 
 ## Hardware
 

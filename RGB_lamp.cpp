@@ -1,4 +1,5 @@
 #include "RGB_lamp.h"
+#include "AppConfig.h"
 
 uint16_t Time = 0;
 uint16_t Number = 0;
@@ -33,6 +34,13 @@ uint8_t RGB_Data[192][3] = {
 // data range -> Red:0~255  Green:0~255  Blue:0~255
 void Set_Color(uint8_t Red,uint8_t Green,uint8_t Blue)                                            // Set RGB bead color
 {
+#if !APP_ENABLE_RGB_LED
+  (void)Red;
+  (void)Green;
+  (void)Blue;
+  neopixelWrite(PIN_NEOPIXEL, 0, 0, 0);
+  return;
+#endif
   neopixelWrite(PIN_NEOPIXEL, Red, Green, Blue);  
 }
 

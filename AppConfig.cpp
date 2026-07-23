@@ -26,6 +26,8 @@ static void load_defaults(AppConfigData * config)
 
   copy_string(config->proxy_base_url, sizeof(config->proxy_base_url), STOCK_PROXY_BASE_URL);
   copy_string(config->stock_symbols, sizeof(config->stock_symbols), DEFAULT_STOCK_SYMBOLS);
+  copy_string(config->fx_symbols, sizeof(config->fx_symbols), DEFAULT_FX_SYMBOLS);
+  config->display_mode = APP_DISPLAY_MODE_STOCKS;
   config->brightness = APP_DEFAULT_BRIGHTNESS;
   config->refresh_seconds = APP_DEFAULT_REFRESH_SECONDS;
   config->rotate_seconds = APP_DEFAULT_ROTATE_SECONDS;
@@ -53,6 +55,11 @@ void AppConfig_Init(void)
 
     copy_string(app_config.proxy_base_url, sizeof(app_config.proxy_base_url), preferences.getString("proxy", app_config.proxy_base_url).c_str());
     copy_string(app_config.stock_symbols, sizeof(app_config.stock_symbols), preferences.getString("symbols", app_config.stock_symbols).c_str());
+    copy_string(app_config.fx_symbols, sizeof(app_config.fx_symbols), preferences.getString("fxsymbols", app_config.fx_symbols).c_str());
+    app_config.display_mode = preferences.getUChar("mode", APP_DISPLAY_MODE_STOCKS);
+    if(app_config.display_mode > APP_DISPLAY_MODE_FX) {
+      app_config.display_mode = APP_DISPLAY_MODE_STOCKS;
+    }
     app_config.brightness = preferences.getUChar("bright", APP_DEFAULT_BRIGHTNESS);
     app_config.refresh_seconds = preferences.getUShort("refresh", APP_DEFAULT_REFRESH_SECONDS);
     app_config.rotate_seconds = preferences.getUShort("rotate", APP_DEFAULT_ROTATE_SECONDS);
@@ -88,6 +95,8 @@ bool AppConfig_Save(const AppConfigData * config)
 
   preferences.putString("proxy", config->proxy_base_url);
   preferences.putString("symbols", config->stock_symbols);
+  preferences.putString("fxsymbols", config->fx_symbols);
+  preferences.putUChar("mode", config->display_mode);
   preferences.putUChar("bright", config->brightness);
   preferences.putUShort("refresh", config->refresh_seconds);
   preferences.putUShort("rotate", config->rotate_seconds);

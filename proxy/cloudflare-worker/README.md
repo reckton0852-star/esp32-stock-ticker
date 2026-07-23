@@ -6,8 +6,17 @@ This folder contains a cloud relay version of the stock proxy.
 
 - receives requests from the ESP32
 - fetches quote and company profile data from Finnhub
+- fetches daily FX reference rates from Frankfurter
 - returns the same JSON shape used by the local proxy
 - caches each symbol briefly at the edge to reduce repeated upstream calls
+
+## Endpoints
+
+- `/health`: service status
+- `/quote?symbol=AAPL`: one stock quote
+- `/quotes`: configured stock quote list
+- `/fx?base=USD`: one FX rate against CNY
+- `/fxs`: configured FX rate list
 
 ## Files
 

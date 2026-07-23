@@ -137,6 +137,7 @@ extern IMUdata Accel;
 extern IMUdata Gyro;
 
 void QMI8658_Init(void);
+void QMI8658_PowerDown(void);
 void QMI8658_Loop(void);
 void QMI8658_transmit(uint8_t addr, uint8_t data);
 uint8_t QMI8658_receive(uint8_t addr);

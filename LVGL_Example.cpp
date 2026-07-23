@@ -12,8 +12,11 @@ size_t Simulated_panel1_Size = 0;
 static lv_timer_t * app_timer = NULL;
 static uint32_t stock_refresh_interval_ms = 60000;
 static const uint32_t STOCK_RETRY_INTERVAL_MS = 15000;
+static const uint32_t MANUAL_AUTO_RESUME_DELAY_MS = 30000;
 static uint32_t auto_symbol_interval_ms = 12000;
+static const uint8_t VIEW_MODE_COUNT = 2;
 static uint32_t last_auto_symbol_ms = 0;
+static uint32_t manual_pause_until_ms = 0;
 static uint8_t current_view_mode = 0;
 
 typedef enum {
@@ -46,6 +49,29 @@ static lv_obj_t * country_value_label = NULL;
 static lv_obj_t * market_cap_value_label = NULL;
 static lv_obj_t * shares_out_value_label = NULL;
 static lv_obj_t * ipo_value_label = NULL;
+
+static lv_obj_t * trading_page = NULL;
+static lv_obj_t * trading_title_label = NULL;
+static lv_obj_t * trading_updated_label = NULL;
+static lv_obj_t * open_value_label = NULL;
+static lv_obj_t * high_value_label = NULL;
+static lv_obj_t * low_value_label = NULL;
+static lv_obj_t * prev_value_label = NULL;
+static lv_obj_t * range_bar_bg = NULL;
+static lv_obj_t * range_bar_fill = NULL;
+static lv_obj_t * range_hint_label = NULL;
+static lv_obj_t * daily_line = NULL;
+static lv_obj_t * daily_empty_label = NULL;
+static lv_point_t daily_points[STOCK_DAILY_POINTS];
+
+static lv_obj_t * trend_page = NULL;
+static lv_obj_t * trend_title_label = NULL;
+static lv_obj_t * trend_updated_label = NULL;
+static lv_obj_t * trend_price_label = NULL;
+static lv_obj_t * trend_change_label = NULL;
+static lv_obj_t * trend_line = NULL;
+static lv_obj_t * trend_empty_label = NULL;
+static lv_point_t trend_points[STOCK_TREND_POINTS];
 static lv_obj_t * outer_panel = NULL;
 
 static bool terminal_theme(void)
@@ -219,11 +245,19 @@ static void mark_user_activity(void)
 {
   uint32_t now = millis();
   last_auto_symbol_ms = now;
+  manual_pause_until_ms = now + MANUAL_AUTO_RESUME_DELAY_MS;
 }
 
 static void auto_advance_symbol_if_needed(void)
 {
   uint32_t now = millis();
+  if(manual_pause_until_ms != 0) {
+    if((int32_t)(now - manual_pause_until_ms) < 0) {
+      return;
+    }
+    manual_pause_until_ms = 0;
+  }
+
   if(now - last_auto_symbol_ms < auto_symbol_interval_ms) {
     return;
   }
@@ -365,6 +399,105 @@ static void build_screen(void)
   create_meta_pair(profile_page, "Mkt Cap", 0, 62, &market_cap_value_label, 138);
   create_meta_pair(profile_page, "Shares", 100, 62, &shares_out_value_label, 86);
   create_meta_pair(profile_page, "IPO", 202, 62, &ipo_value_label, 82);
+
+  trading_page = lv_obj_create(content_panel);
+  lv_obj_set_size(trading_page, 304, 116);
+  lv_obj_align(trading_page, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_bg_opa(trading_page, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(trading_page, 0, 0);
+  lv_obj_set_style_pad_all(trading_page, 0, 0);
+  lv_obj_clear_flag(trading_page, LV_OBJ_FLAG_SCROLLABLE);
+
+  trading_title_label = lv_label_create(trading_page);
+  lv_obj_set_style_text_color(trading_title_label, color_basics_text(), 0);
+  lv_obj_set_style_text_font(trading_title_label, font_title(), 0);
+  lv_obj_align(trading_title_label, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  trading_updated_label = lv_label_create(trading_page);
+  lv_obj_set_style_text_color(trading_updated_label, color_meta_title(), 0);
+  lv_obj_set_style_text_font(trading_updated_label, font_meta(), 0);
+  lv_obj_align(trading_updated_label, LV_ALIGN_TOP_RIGHT, 0, 1);
+
+  create_meta_pair(trading_page, "Open", 0, 24, &open_value_label, 70);
+  create_meta_pair(trading_page, "High", 78, 24, &high_value_label, 70);
+  create_meta_pair(trading_page, "Low", 156, 24, &low_value_label, 70);
+  create_meta_pair(trading_page, "Prev", 234, 24, &prev_value_label, 58);
+
+  range_bar_bg = lv_obj_create(trading_page);
+  lv_obj_remove_style_all(range_bar_bg);
+  lv_obj_set_size(range_bar_bg, 278, 10);
+  lv_obj_align(range_bar_bg, LV_ALIGN_BOTTOM_MID, 0, -18);
+  lv_obj_set_style_radius(range_bar_bg, 5, 0);
+  lv_obj_set_style_bg_color(range_bar_bg, lv_color_hex(0x223146), 0);
+  lv_obj_set_style_bg_opa(range_bar_bg, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(range_bar_bg, LV_OBJ_FLAG_SCROLLABLE);
+
+  range_bar_fill = lv_obj_create(range_bar_bg);
+  lv_obj_remove_style_all(range_bar_fill);
+  lv_obj_set_size(range_bar_fill, 1, 10);
+  lv_obj_align(range_bar_fill, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_set_style_radius(range_bar_fill, 5, 0);
+  lv_obj_set_style_bg_color(range_bar_fill, lv_color_hex(0x7dc4ff), 0);
+  lv_obj_set_style_bg_opa(range_bar_fill, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(range_bar_fill, LV_OBJ_FLAG_SCROLLABLE);
+
+  range_hint_label = lv_label_create(trading_page);
+  lv_obj_set_style_text_color(range_hint_label, color_meta_title(), 0);
+  lv_obj_set_style_text_font(range_hint_label, font_meta(), 0);
+  lv_label_set_text(range_hint_label, "LOW                                HIGH");
+  lv_obj_align(range_hint_label, LV_ALIGN_BOTTOM_MID, 0, -1);
+
+  daily_line = lv_line_create(trading_page);
+  lv_obj_set_style_line_width(daily_line, 3, 0);
+  lv_obj_set_style_line_color(daily_line, lv_color_hex(0x7dc4ff), 0);
+  lv_obj_set_style_line_rounded(daily_line, true, 0);
+  lv_obj_align(daily_line, LV_ALIGN_BOTTOM_LEFT, 2, -8);
+
+  daily_empty_label = lv_label_create(trading_page);
+  lv_obj_set_style_text_color(daily_empty_label, color_meta_title(), 0);
+  lv_obj_set_style_text_font(daily_empty_label, font_meta(), 0);
+  lv_label_set_text(daily_empty_label, "No 30D history");
+  lv_obj_align(daily_empty_label, LV_ALIGN_CENTER, 0, 20);
+
+  trend_page = lv_obj_create(content_panel);
+  lv_obj_set_size(trend_page, 304, 116);
+  lv_obj_align(trend_page, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_bg_opa(trend_page, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(trend_page, 0, 0);
+  lv_obj_set_style_pad_all(trend_page, 0, 0);
+  lv_obj_clear_flag(trend_page, LV_OBJ_FLAG_SCROLLABLE);
+
+  trend_title_label = lv_label_create(trend_page);
+  lv_obj_set_style_text_color(trend_title_label, color_basics_text(), 0);
+  lv_obj_set_style_text_font(trend_title_label, font_title(), 0);
+  lv_label_set_text(trend_title_label, "Intraday Trend");
+  lv_obj_align(trend_title_label, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  trend_updated_label = lv_label_create(trend_page);
+  lv_obj_set_style_text_color(trend_updated_label, color_meta_title(), 0);
+  lv_obj_set_style_text_font(trend_updated_label, font_meta(), 0);
+  lv_obj_align(trend_updated_label, LV_ALIGN_TOP_RIGHT, 0, 1);
+
+  trend_price_label = lv_label_create(trend_page);
+  lv_obj_set_style_text_color(trend_price_label, color_price_text(), 0);
+  lv_obj_set_style_text_font(trend_price_label, font_meta_value(), 0);
+  lv_obj_align(trend_price_label, LV_ALIGN_TOP_LEFT, 0, 22);
+
+  trend_change_label = lv_label_create(trend_page);
+  lv_obj_set_style_text_font(trend_change_label, font_meta_value(), 0);
+  lv_obj_align(trend_change_label, LV_ALIGN_TOP_RIGHT, 0, 22);
+
+  trend_line = lv_line_create(trend_page);
+  lv_obj_set_style_line_width(trend_line, 3, 0);
+  lv_obj_set_style_line_color(trend_line, lv_color_hex(0x7dc4ff), 0);
+  lv_obj_set_style_line_rounded(trend_line, true, 0);
+  lv_obj_align(trend_line, LV_ALIGN_BOTTOM_LEFT, 2, -12);
+
+  trend_empty_label = lv_label_create(trend_page);
+  lv_obj_set_style_text_color(trend_empty_label, color_meta_title(), 0);
+  lv_obj_set_style_text_font(trend_empty_label, font_meta(), 0);
+  lv_label_set_text(trend_empty_label, "Collecting price points...");
+  lv_obj_align(trend_empty_label, LV_ALIGN_CENTER, 0, 14);
 }
 
 void Lvgl_ShowBootSplash(void)
@@ -503,6 +636,7 @@ static void update_screen(void)
 {
   const StockQuote * quote = Stock_CurrentQuote();
   char buffer[64];
+  bool fx_mode = Stock_IsFxMode();
 
   if(!quote) {
     return;
@@ -516,16 +650,22 @@ static void update_screen(void)
     (unsigned)(current_view_mode + 1));
   lv_label_set_text(page_label, buffer);
 
+  lv_obj_add_flag(price_page, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(profile_page, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(trading_page, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(trend_page, LV_OBJ_FLAG_HIDDEN);
   if(current_view_mode == 0) {
     lv_obj_clear_flag(price_page, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(profile_page, LV_OBJ_FLAG_HIDDEN);
   } else {
-    lv_obj_add_flag(price_page, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(profile_page, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(trading_page, LV_OBJ_FLAG_HIDDEN);
   }
 
   if(quote->ready) {
-    snprintf(buffer, sizeof(buffer), "$%.2f", quote->price);
+    if(fx_mode) {
+      snprintf(buffer, sizeof(buffer), "%.4f", quote->price);
+    } else {
+      snprintf(buffer, sizeof(buffer), "$%.2f", quote->price);
+    }
     lv_label_set_text(price_label, buffer);
 
     snprintf(buffer, sizeof(buffer), "%+.1f%%", quote->change_percent);
@@ -541,12 +681,18 @@ static void update_screen(void)
     lv_label_set_text(change_label, "--");
     apply_change_box_color(NULL);
     lv_obj_set_style_text_color(change_label, lv_color_hex(0xffffff), 0);
-    lv_label_set_text(market_label, "NASDAQ - USD");
+    lv_label_set_text(market_label, fx_mode ? "FX - CNY" : "NASDAQ - USD");
     lv_label_set_text(updated_label, "--:--");
   }
 
-  lv_label_set_text(basics_title_label, "Company Basics");
-  if(quote->profile_ready) {
+  lv_label_set_text(basics_title_label, fx_mode ? "FX Reference" : "Company Basics");
+  if(fx_mode) {
+    lv_label_set_text(industry_value_label, quote->symbol);
+    lv_label_set_text(country_value_label, "CNY");
+    lv_label_set_text(market_cap_value_label, "Daily");
+    lv_label_set_text(shares_out_value_label, "Frankfurter");
+    lv_label_set_text(ipo_value_label, "Free API");
+  } else if(quote->profile_ready) {
     lv_label_set_text(industry_value_label, quote->industry);
     lv_label_set_text(country_value_label, quote->country);
     lv_label_set_text(market_cap_value_label, quote->market_cap);
@@ -562,6 +708,108 @@ static void update_screen(void)
   snprintf(buffer, sizeof(buffer), "Quote %s", quote->updated_at);
   lv_label_set_text(basics_updated_label, buffer);
 
+  lv_label_set_text(trading_title_label, "30D Trend");
+  snprintf(buffer, sizeof(buffer), "Quote %s", quote->updated_at);
+  lv_label_set_text(trading_updated_label, buffer);
+  lv_obj_add_flag(range_bar_bg, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(range_hint_label, LV_OBJ_FLAG_HIDDEN);
+  if(quote->daily_history_count >= 2) {
+    float min_value = quote->daily_history[0];
+    float max_value = quote->daily_history[0];
+    for(uint8_t i = 1; i < quote->daily_history_count; i++) {
+      if(quote->daily_history[i] < min_value) min_value = quote->daily_history[i];
+      if(quote->daily_history[i] > max_value) max_value = quote->daily_history[i];
+    }
+
+    snprintf(buffer, sizeof(buffer), fx_mode ? "%.4f" : "%.2f", quote->daily_history[0]);
+    lv_label_set_text(open_value_label, buffer);
+    snprintf(buffer, sizeof(buffer), fx_mode ? "%.4f" : "%.2f", max_value);
+    lv_label_set_text(high_value_label, buffer);
+    snprintf(buffer, sizeof(buffer), fx_mode ? "%.4f" : "%.2f", min_value);
+    lv_label_set_text(low_value_label, buffer);
+    snprintf(buffer, sizeof(buffer), fx_mode ? "%.4f" : "%.2f", quote->daily_history[quote->daily_history_count - 1]);
+    lv_label_set_text(prev_value_label, buffer);
+
+    float span = max_value - min_value;
+    if(span < 0.0001f) {
+      span = 0.0001f;
+    }
+
+    const int16_t graph_x = 0;
+    const int16_t graph_y = 58;
+    const int16_t graph_w = 292;
+    const int16_t graph_h = 42;
+    for(uint8_t i = 0; i < quote->daily_history_count; i++) {
+      daily_points[i].x = graph_x + (int16_t)((graph_w * i) / (quote->daily_history_count - 1));
+      float normalized = (quote->daily_history[i] - min_value) / span;
+      if(normalized < 0.0f) normalized = 0.0f;
+      if(normalized > 1.0f) normalized = 1.0f;
+      daily_points[i].y = graph_y + graph_h - (int16_t)(normalized * graph_h);
+    }
+    lv_line_set_points(daily_line, daily_points, quote->daily_history_count);
+    lv_obj_clear_flag(daily_line, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(daily_empty_label, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_label_set_text(open_value_label, "-");
+    lv_label_set_text(high_value_label, "-");
+    lv_label_set_text(low_value_label, "-");
+    lv_label_set_text(prev_value_label, "-");
+    lv_obj_add_flag(daily_line, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(daily_empty_label, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  snprintf(buffer, sizeof(buffer), "Quote %s", quote->updated_at);
+  lv_label_set_text(trend_updated_label, buffer);
+  if(quote->ready) {
+    if(fx_mode) {
+      snprintf(buffer, sizeof(buffer), "%.4f CNY", quote->price);
+    } else {
+      snprintf(buffer, sizeof(buffer), "$%.2f", quote->price);
+    }
+    lv_label_set_text(trend_price_label, buffer);
+    snprintf(buffer, sizeof(buffer), "%+.1f%%", quote->change_percent);
+    lv_label_set_text(trend_change_label, buffer);
+    lv_obj_set_style_text_color(trend_change_label, quote->change >= 0 ? lv_color_hex(0xff4d4d) : lv_color_hex(0x22c55e), 0);
+  } else {
+    lv_label_set_text(trend_price_label, "--.--");
+    lv_label_set_text(trend_change_label, "--");
+    lv_obj_set_style_text_color(trend_change_label, color_meta_title(), 0);
+  }
+
+  float trend_values[STOCK_TREND_POINTS];
+  size_t trend_count = Stock_GetCurrentTrend(trend_values, STOCK_TREND_POINTS);
+  if(trend_count >= 2) {
+    float min_value = trend_values[0];
+    float max_value = trend_values[0];
+    for(size_t i = 1; i < trend_count; i++) {
+      if(trend_values[i] < min_value) min_value = trend_values[i];
+      if(trend_values[i] > max_value) max_value = trend_values[i];
+    }
+
+    float span = max_value - min_value;
+    if(span < 0.01f) {
+      span = 0.01f;
+    }
+
+    const int16_t graph_x = 0;
+    const int16_t graph_y = 48;
+    const int16_t graph_w = 292;
+    const int16_t graph_h = 46;
+    for(size_t i = 0; i < trend_count; i++) {
+      trend_points[i].x = graph_x + (int16_t)((graph_w * i) / (trend_count - 1));
+      float normalized = (trend_values[i] - min_value) / span;
+      if(normalized < 0.0f) normalized = 0.0f;
+      if(normalized > 1.0f) normalized = 1.0f;
+      trend_points[i].y = graph_y + graph_h - (int16_t)(normalized * graph_h);
+    }
+    lv_line_set_points(trend_line, trend_points, trend_count);
+    lv_obj_clear_flag(trend_line, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(trend_empty_label, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(trend_line, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(trend_empty_label, LV_OBJ_FLAG_HIDDEN);
+  }
+
   apply_rgb_for_quote(quote);
 }
 
@@ -574,7 +822,7 @@ static void handle_button_action(void)
     Stock_RequestCurrentIfStale(stock_refresh_interval_ms);
   } else if(BOOT_KEY_State == DoubleClick) {
     mark_user_activity();
-    current_view_mode = (current_view_mode + 1) % 2;
+    current_view_mode = (current_view_mode + 1) % VIEW_MODE_COUNT;
     update_screen();
     Stock_RequestCurrent();
   } else if(BOOT_KEY_State == LongPressStart) {
@@ -590,19 +838,25 @@ static void handle_button_action(void)
 void IRAM_ATTR example1_increase_lvgl_tick(lv_timer_t * t)
 {
   (void)t;
+  static uint32_t last_screen_update_ms = 0;
   handle_button_action();
   if(WIFI_Connection) {
     Stock_ServiceAutoRefresh(stock_refresh_interval_ms, STOCK_RETRY_INTERVAL_MS);
   }
 
   auto_advance_symbol_if_needed();
-  update_screen();
+  uint32_t now = millis();
+  if(now - last_screen_update_ms >= 1000) {
+    last_screen_update_ms = now;
+    update_screen();
+  }
 }
 
 void Lvgl_Example1(void)
 {
   current_view_mode = 0;
   last_auto_symbol_ms = millis();
+  manual_pause_until_ms = 0;
   stock_refresh_interval_ms = (uint32_t)AppConfig_Get()->refresh_seconds * 1000UL;
   auto_symbol_interval_ms = (uint32_t)AppConfig_Get()->rotate_seconds * 1000UL;
   build_screen();

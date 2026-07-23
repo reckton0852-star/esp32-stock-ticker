@@ -59,6 +59,15 @@ void QMI8658_Init(void)
     }
 }
 
+void QMI8658_PowerDown(void)
+{
+    uint8_t buf[1] = {0};
+    Device_addr = QMI8658_L_SLAVE_ADDRESS;
+    I2C_Read(Device_addr, QMI8658_REVISION_ID, buf, 1);
+    printf("QMI8658 Device ID: %x (power down)\r\n", buf[0]);
+    setState(sensor_power_down);
+}
+
 void QMI8658_Loop(void)
 {
   getAccelerometer();

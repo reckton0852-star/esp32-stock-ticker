@@ -7,9 +7,12 @@
 #include <ctype.h>
 
 static const uint32_t STOCK_HTTP_TIMEOUT_MS = 4000;
-static const uint32_t STOCK_REQUEST_GAP_MS = 2000;
+static const uint32_t STOCK_REQUEST_GAP_MS = 600;
 static const size_t MAX_STOCK_COUNT = 8;
 static StockQuote quotes[MAX_STOCK_COUNT];
+static float quote_history[MAX_STOCK_COUNT][STOCK_TREND_POINTS];
+static uint8_t quote_history_count[MAX_STOCK_COUNT];
+static uint8_t quote_history_next[MAX_STOCK_COUNT];
 const size_t STOCK_COUNT = MAX_STOCK_COUNT;
 static const size_t NO_PENDING_PRIORITY = (size_t)-1;
 static size_t stock_count = 0;
@@ -25,6 +28,22 @@ static const char * known_name(const char * symbol)
   return NULL;
 }
 
+static const char * known_fx_name(const char * symbol)
+{
+  if(strcmp(symbol, "USD") == 0) return "US Dollar";
+  if(strcmp(symbol, "EUR") == 0) return "Euro";
+  if(strcmp(symbol, "GBP") == 0) return "British Pound";
+  if(strcmp(symbol, "CAD") == 0) return "Canadian Dollar";
+  if(strcmp(symbol, "JPY") == 0) return "Japanese Yen";
+  if(strcmp(symbol, "HKD") == 0) return "Hong Kong Dollar";
+  return NULL;
+}
+
+static bool fx_mode(void)
+{
+  return AppConfig_Get()->display_mode == APP_DISPLAY_MODE_FX;
+}
+
 static size_t current_index = 0;
 static size_t auto_refresh_index = 0;
 static size_t pending_priority_index = NO_PENDING_PRIORITY;
@@ -38,11 +57,24 @@ static bool queue_stock_request(size_t index);
 static void finish_stock_request(StockQuote * quote);
 static void StockWorkerTask(void * parameter);
 
+static void append_quote_history(size_t index, float price)
+{
+  if(index >= stock_count || !(price > 0.01f)) {
+    return;
+  }
+
+  quote_history[index][quote_history_next[index]] = price;
+  quote_history_next[index] = (quote_history_next[index] + 1) % STOCK_TREND_POINTS;
+  if(quote_history_count[index] < STOCK_TREND_POINTS) {
+    quote_history_count[index]++;
+  }
+}
+
 static void reset_quote(StockQuote * quote, const char * symbol)
 {
   memset(quote, 0, sizeof(*quote));
   quote->symbol = strdup(symbol);
-  const char * pretty_name = known_name(symbol);
+  const char * pretty_name = fx_mode() ? known_fx_name(symbol) : known_name(symbol);
   quote->name = pretty_name ? strdup(pretty_name) : quote->symbol;
   snprintf(quote->status, sizeof(quote->status), "Waiting");
   snprintf(quote->updated_at, sizeof(quote->updated_at), "--:--");
@@ -132,6 +164,56 @@ static bool extract_json_string(const String& payload, const char * key, char * 
   return true;
 }
 
+static uint8_t extract_json_float_array(const String& payload, const char * key, float * values, size_t max_values)
+{
+  if(!values || max_values == 0) {
+    return 0;
+  }
+
+  int start = payload.indexOf(key);
+  if(start < 0) {
+    return 0;
+  }
+
+  start += strlen(key);
+  while(start < payload.length() && payload[start] != '[') {
+    start++;
+  }
+  if(start >= payload.length()) {
+    return 0;
+  }
+  start++;
+
+  uint8_t count = 0;
+  while(start < payload.length() && count < max_values) {
+    while(start < payload.length() && (payload[start] == ' ' || payload[start] == '\t' || payload[start] == ',')) {
+      start++;
+    }
+    if(start >= payload.length() || payload[start] == ']') {
+      break;
+    }
+
+    int end = start;
+    while(end < payload.length()) {
+      char c = payload[end];
+      if((c >= '0' && c <= '9') || c == '.' || c == '-') {
+        end++;
+      } else {
+        break;
+      }
+    }
+
+    if(end <= start) {
+      break;
+    }
+
+    values[count++] = payload.substring(start, end).toFloat();
+    start = end;
+  }
+
+  return count;
+}
+
 static void copy_or_default(char * dest, size_t dest_size, bool ok, const char * value, const char * fallback)
 {
   snprintf(dest, dest_size, "%s", (ok && value && value[0] != '\0') ? value : fallback);
@@ -161,9 +243,15 @@ static void perform_stock_request(size_t index)
   }
 
   char url[192];
-  snprintf(url, sizeof(url),
-    "%s/quote?symbol=%s",
-    Stock_ProxyBaseUrl(), quote->symbol);
+  if(fx_mode()) {
+    snprintf(url, sizeof(url),
+      "%s/fx?base=%s",
+      Stock_ProxyBaseUrl(), quote->symbol);
+  } else {
+    snprintf(url, sizeof(url),
+      "%s/quote?symbol=%s",
+      Stock_ProxyBaseUrl(), quote->symbol);
+  }
   printf("Stock request URL: %s\r\n", url);
 
   HTTPClient http;
@@ -205,7 +293,7 @@ static void perform_stock_request(size_t index)
   http.addHeader("Connection", "close");
   http.setUserAgent("esp32-stock-ticker/1.0");
 
-  printf("Stock request start: %s via %s\r\n", quote->symbol, use_https ? "https" : "http");
+  printf("%s request start: %s via %s\r\n", fx_mode() ? "FX" : "Stock", quote->symbol, use_https ? "https" : "http");
   int http_code = http.GET();
   printf("Stock HTTP code %s: %d\r\n", quote->symbol, http_code);
   if(http_code < 0) {
@@ -252,6 +340,10 @@ static void perform_stock_request(size_t index)
   bool ok_price = extract_json_float(payload, "\"c\":", &price);
   bool ok_change = extract_json_float(payload, "\"d\":", &change);
   bool ok_dp = extract_json_float(payload, "\"dp\":", &change_percent);
+  bool ok_open = extract_json_float(payload, "\"o\":", &quote->open);
+  bool ok_high = extract_json_float(payload, "\"h\":", &quote->high);
+  bool ok_low = extract_json_float(payload, "\"l\":", &quote->low);
+  bool ok_previous_close = extract_json_float(payload, "\"pc\":", &quote->previous_close);
   bool ok_status = extract_json_string(payload, "\"status\":", status, sizeof(status));
   bool ok_updated_at = extract_json_string(payload, "\"updated_at\":", updated_at, sizeof(updated_at));
   bool ok_industry = extract_json_string(payload, "\"industry\":", industry, sizeof(industry));
@@ -259,6 +351,8 @@ static void perform_stock_request(size_t index)
   bool ok_ipo = extract_json_string(payload, "\"ipo\":", ipo, sizeof(ipo));
   bool ok_market_cap = extract_json_string(payload, "\"market_cap\":", market_cap, sizeof(market_cap));
   bool ok_shares_out = extract_json_string(payload, "\"shares_out\":", shares_out, sizeof(shares_out));
+  float daily_history[STOCK_DAILY_POINTS];
+  uint8_t daily_history_count = extract_json_float_array(payload, "\"history\":", daily_history, STOCK_DAILY_POINTS);
 
   if(ok_price && price > 0.01f) {
     if(!ok_change) {
@@ -271,16 +365,24 @@ static void perform_stock_request(size_t index)
     quote->price = price;
     quote->change = change;
     quote->change_percent = change_percent;
+    quote->trading_ready = ok_open || ok_high || ok_low || ok_previous_close;
     quote->ready = true;
     snprintf(quote->status, sizeof(quote->status), "%s", ok_status ? status : "USD");
-    snprintf(quote->updated_at, sizeof(quote->updated_at), "%s", ok_updated_at ? updated_at : "--:--");
+    update_timestamp(quote);
     copy_or_default(quote->industry, sizeof(quote->industry), ok_industry, industry, "-");
     copy_or_default(quote->country, sizeof(quote->country), ok_country, country, "-");
     copy_or_default(quote->ipo, sizeof(quote->ipo), ok_ipo, ipo, "-");
     copy_or_default(quote->market_cap, sizeof(quote->market_cap), ok_market_cap, market_cap, "-");
     copy_or_default(quote->shares_out, sizeof(quote->shares_out), ok_shares_out, shares_out, "-");
     quote->profile_ready = ok_industry || ok_country || ok_ipo || ok_market_cap || ok_shares_out;
-    printf("Stock ok %s: %.2f %.2f %.2f%%\r\n",
+    quote->last_fetch_ms = millis();
+    if(daily_history_count >= 2) {
+      memcpy(quote->daily_history, daily_history, sizeof(float) * daily_history_count);
+      quote->daily_history_count = daily_history_count;
+    }
+    append_quote_history(index, quote->price);
+    printf("%s ok %s: %.4f %.4f %.2f%%\r\n",
+      fx_mode() ? "FX" : "Stock",
       quote->symbol, quote->price, quote->change, quote->change_percent);
   } else {
     if(!quote->ready) {
@@ -311,7 +413,7 @@ static void StockWorkerTask(void * parameter)
       in_flight_index = index;
       request_in_flight = true;
       quotes[index].loading = true;
-      quotes[index].last_fetch_ms = now;
+      quotes[index].last_attempt_ms = now;
       continue;
     }
 
@@ -366,10 +468,13 @@ void Stock_Init(void)
 
   const AppConfigData * config = AppConfig_Get();
   char symbols[APP_SYMBOLS_MAX];
-  snprintf(symbols, sizeof(symbols), "%s", config->stock_symbols);
+  snprintf(symbols, sizeof(symbols), "%s", fx_mode() ? config->fx_symbols : config->stock_symbols);
 
   for(size_t i = 0; i < MAX_STOCK_COUNT; i++) {
     memset(&quotes[i], 0, sizeof(quotes[i]));
+    memset(quote_history[i], 0, sizeof(quote_history[i]));
+    quote_history_count[i] = 0;
+    quote_history_next[i] = 0;
   }
 
   stock_count = 0;
@@ -391,7 +496,7 @@ void Stock_Init(void)
   }
 
   if(stock_count == 0) {
-    reset_quote(&quotes[0], "WDC");
+    reset_quote(&quotes[0], fx_mode() ? "USD" : "WDC");
     stock_count = 1;
   }
 
@@ -443,6 +548,32 @@ const StockQuote * Stock_CurrentQuote(void)
   return &quotes[current_index];
 }
 
+size_t Stock_GetCurrentTrend(float * values, size_t max_values)
+{
+  if(!values || max_values == 0 || current_index >= stock_count) {
+    return 0;
+  }
+
+  size_t count = quote_history_count[current_index];
+  if(count > max_values) {
+    count = max_values;
+  }
+
+  uint8_t next = quote_history_next[current_index];
+  uint8_t stored = quote_history_count[current_index];
+  uint8_t start = stored < STOCK_TREND_POINTS ? 0 : next;
+
+  for(size_t i = 0; i < count; i++) {
+    values[i] = quote_history[current_index][(start + i) % STOCK_TREND_POINTS];
+  }
+  return count;
+}
+
+bool Stock_IsFxMode(void)
+{
+  return fx_mode();
+}
+
 void Stock_RequestCurrent(void)
 {
   if(!queue_stock_request(current_index)) {
@@ -468,8 +599,13 @@ bool Stock_RequestCurrentIfStale(uint32_t min_interval_ms)
 
 static bool quote_needs_refresh(const StockQuote * quote, uint32_t now, uint32_t refresh_interval_ms, uint32_t retry_interval_ms)
 {
+  if(quote->last_attempt_ms != 0 && now - quote->last_attempt_ms < retry_interval_ms) {
+    return false;
+  }
+
   uint32_t interval = quote->ready ? refresh_interval_ms : retry_interval_ms;
-  return quote->last_fetch_ms == 0 || now - quote->last_fetch_ms >= interval;
+  uint32_t anchor = quote->ready ? quote->last_fetch_ms : quote->last_attempt_ms;
+  return anchor == 0 || now - anchor >= interval;
 }
 
 void Stock_ServiceAutoRefresh(uint32_t refresh_interval_ms, uint32_t retry_interval_ms)

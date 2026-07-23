@@ -34,7 +34,7 @@ static String form_page(const String& notice = "")
   html += "body{font-family:Arial,sans-serif;background:#0b1320;color:#e6edf7;margin:0;padding:20px;}";
   html += ".wrap{max-width:680px;margin:0 auto;background:#111c2b;border:1px solid #243346;border-radius:12px;padding:20px;}";
   html += "h1{margin-top:0;font-size:24px;}label{display:block;margin:14px 0 6px;font-size:14px;color:#9fb0c7;}";
-  html += "input{width:100%;box-sizing:border-box;padding:12px;border-radius:8px;border:1px solid #30445d;background:#0a111b;color:#f3f7fb;}";
+  html += "input,select{width:100%;box-sizing:border-box;padding:12px;border-radius:8px;border:1px solid #30445d;background:#0a111b;color:#f3f7fb;}";
   html += ".row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}.notice{margin:0 0 16px;padding:12px;border-radius:8px;background:#17324d;color:#d9ecff;}";
   html += "button{margin-top:18px;width:100%;padding:14px;border:0;border-radius:10px;background:#2563eb;color:white;font-size:16px;font-weight:700;}";
   html += "small{display:block;margin-top:16px;color:#7f93ad;line-height:1.5;}</style></head><body><div class='wrap'>";
@@ -50,7 +50,16 @@ static String form_page(const String& notice = "")
     html += "</div>";
   }
   html += "<label>Proxy Base URL</label><input name='proxy' value='" + html_escape(config->proxy_base_url) + "'>";
+  html += "<label>Display Mode</label><select name='mode'>";
+  html += "<option value='0'";
+  if(config->display_mode == APP_DISPLAY_MODE_STOCKS) html += " selected";
+  html += ">Stocks</option>";
+  html += "<option value='1'";
+  if(config->display_mode == APP_DISPLAY_MODE_FX) html += " selected";
+  html += ">FX to CNY</option>";
+  html += "</select>";
   html += "<label>Stock Symbols (comma separated)</label><input name='symbols' value='" + html_escape(config->stock_symbols) + "'>";
+  html += "<label>FX Symbols (base currencies, comma separated)</label><input name='fxsymbols' value='" + html_escape(config->fx_symbols) + "'>";
   html += "<div class='row'>";
   html += "<div><label>Refresh Seconds</label><input name='refresh' value='" + String(config->refresh_seconds) + "'></div>";
   html += "<div><label>Rotate Seconds</label><input name='rotate' value='" + String(config->rotate_seconds) + "'></div>";
@@ -100,12 +109,15 @@ static void handle_save()
 
   snprintf(updated.proxy_base_url, sizeof(updated.proxy_base_url), "%s", web_server.arg("proxy").c_str());
   snprintf(updated.stock_symbols, sizeof(updated.stock_symbols), "%s", web_server.arg("symbols").c_str());
+  snprintf(updated.fx_symbols, sizeof(updated.fx_symbols), "%s", web_server.arg("fxsymbols").c_str());
+  updated.display_mode = parse_u8_arg(web_server.arg("mode"), updated.display_mode, APP_DISPLAY_MODE_STOCKS, APP_DISPLAY_MODE_FX);
   updated.refresh_seconds = parse_u16_arg(web_server.arg("refresh"), updated.refresh_seconds, 15, 600);
   updated.rotate_seconds = parse_u16_arg(web_server.arg("rotate"), updated.rotate_seconds, 5, 300);
   updated.brightness = parse_u8_arg(web_server.arg("bright"), updated.brightness, 10, 100);
 
-  if(strlen(updated.wifi[0].ssid) == 0 || strlen(updated.proxy_base_url) == 0 || strlen(updated.stock_symbols) == 0) {
-    web_server.send(200, "text/html; charset=utf-8", form_page("WiFi 1, proxy URL, and stock symbols cannot be empty."));
+  if(strlen(updated.wifi[0].ssid) == 0 || strlen(updated.proxy_base_url) == 0 ||
+     strlen(updated.stock_symbols) == 0 || strlen(updated.fx_symbols) == 0) {
+    web_server.send(200, "text/html; charset=utf-8", form_page("WiFi 1, proxy URL, stock symbols, and FX symbols cannot be empty."));
     return;
   }
 

@@ -139,8 +139,12 @@ void setup()
   BAT_Init();
   Button_Init();
   I2C_Init();
-  QMI8658_Init(); 
-  Set_Color(0, 24, 40);
+  if(APP_ENABLE_IMU) {
+    QMI8658_Init();
+  } else {
+    QMI8658_PowerDown();
+  }
+  Set_Color(0, 0, 0);
   SD_Init();         
   LCD_Backlight = 0;
   LCD_Init();

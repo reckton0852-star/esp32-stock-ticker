@@ -4,3 +4,4 @@ compatibility_date = "2026-06-20"
 
 [vars]
 CACHE_TTL_SECONDS = "55"
+FX_CACHE_TTL_SECONDS = "3600"
