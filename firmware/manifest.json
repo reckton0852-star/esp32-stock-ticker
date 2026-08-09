@@ -1,10 +1,10 @@
 {
     "ready":  true,
-    "version":  "v2.1.2",
-    "notes":  "Fix OTA install returning to Setup while waiting for the market network task.",
-    "md5":  "db2f50f6c97083513e5e28484e88140c",
+    "version":  "v2.1.3",
+    "notes":  "OTA verification release for devices running v2.1.2; no feature changes.",
+    "md5":  "bf5c4ddae4be01fafb3669b77b175785",
     "size":  1498080,
-    "asset_url":  "https://github.com/reckton0852-star/esp32-stock-ticker/releases/download/v2.1.2/esp32-stock-ticker.bin",
-    "published_at":  "2026-08-09T18:09:33Z",
+    "asset_url":  "https://github.com/reckton0852-star/esp32-stock-ticker/releases/download/v2.1.3/esp32-stock-ticker.bin",
+    "published_at":  "2026-08-09T19:05:26Z",
     "error":  ""
 }
