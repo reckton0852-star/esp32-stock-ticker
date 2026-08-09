@@ -38,6 +38,50 @@ function resolveFx(symbol) {
   return { symbol, name: symbol, status: `${symbol}/CNY` };
 }
 
+function parseRequestedItems(rawValue, resolver, fallbackItems) {
+  if (!rawValue) {
+    return fallbackItems;
+  }
+
+  const seen = new Set();
+  const items = [];
+  for (const rawSymbol of rawValue.split(",")) {
+    const symbol = rawSymbol.trim().toUpperCase();
+    if (!/^[A-Z0-9._-]{1,12}$/.test(symbol) || seen.has(symbol)) {
+      continue;
+    }
+    seen.add(symbol);
+    items.push(resolver(symbol));
+    if (items.length >= 8) {
+      break;
+    }
+  }
+  return items.length > 0 ? items : fallbackItems;
+}
+
+function emptyQuote(item, error = "") {
+  return {
+    symbol: item.symbol,
+    name: item.name,
+    status: item.status,
+    c: 0,
+    d: 0,
+    dp: 0,
+    o: 0,
+    h: 0,
+    l: 0,
+    pc: 0,
+    updated_at: "--:--",
+    industry: "-",
+    country: "-",
+    ipo: "-",
+    market_cap: "-",
+    shares_out: "-",
+    ready: false,
+    error,
+  };
+}
+
 const configPath = path.join(__dirname, "proxy-secrets.json");
 if (!fs.existsSync(configPath)) {
   throw new Error("Missing proxy-secrets.json. Copy proxy-secrets.example.json first.");
@@ -346,7 +390,21 @@ const server = http.createServer((req, res) => {
   }
 
   if (url.pathname === "/quotes") {
-    return json(res, 200, Array.from(cache.values()));
+    const requestedItems = parseRequestedItems(url.searchParams.get("symbols"), resolveSymbol, symbols);
+    Promise.all(requestedItems.map(async (item) => {
+      if (!cache.has(item.symbol)) {
+        cache.set(item.symbol, emptyQuote(item));
+      }
+      if (!cache.get(item.symbol).ready) {
+        try {
+          await refreshSymbol(item);
+        } catch (error) {
+          return { ...cache.get(item.symbol), error: String(error.message || error) };
+        }
+      }
+      return cache.get(item.symbol);
+    })).then((results) => json(res, 200, results));
+    return;
   }
 
   if (url.pathname === "/quote") {
@@ -356,26 +414,7 @@ const server = http.createServer((req, res) => {
     }
     if (!cache.has(symbol)) {
       const item = resolveSymbol(symbol);
-      cache.set(symbol, {
-        symbol: item.symbol,
-        name: item.name,
-        status: item.status,
-        c: 0,
-        d: 0,
-        dp: 0,
-        o: 0,
-        h: 0,
-        l: 0,
-        pc: 0,
-        updated_at: "--:--",
-        industry: "-",
-        country: "-",
-        ipo: "-",
-        market_cap: "-",
-        shares_out: "-",
-        ready: false,
-        error: "",
-      });
+      cache.set(symbol, emptyQuote(item));
       refreshSymbol(item).catch((error) => {
         console.log(`[ERR] ${item.symbol}: ${error.message || error}`);
       });
@@ -415,7 +454,8 @@ const server = http.createServer((req, res) => {
   }
 
   if (url.pathname === "/fxs") {
-    Promise.all(fxItems.map(async (item) => {
+    const requestedItems = parseRequestedItems(url.searchParams.get("bases"), resolveFx, fxItems);
+    Promise.all(requestedItems.map(async (item) => {
       try {
         return await fetchFx(item);
       } catch (error) {

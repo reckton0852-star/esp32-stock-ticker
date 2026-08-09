@@ -16,6 +16,9 @@ typedef void (*WirelessStatusCallback)(const char * line1, const char * line2, c
 void Wireless_Test2();
 bool Wireless_GetLocalTime(struct tm * timeinfo);
 bool Wireless_EnsureConnected();
+void Wireless_ServiceConnectionState(void);
+bool Wireless_StartReconnect(void);
+bool Wireless_ReconnectInProgress(void);
 bool Wireless_ConnectSavedWithStatus(WirelessStatusCallback callback);
 int Wireless_ScanNearbyWiFi(void);
 void Wireless_SyncTimeNow(void);

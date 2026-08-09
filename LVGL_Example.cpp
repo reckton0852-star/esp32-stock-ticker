@@ -3,6 +3,7 @@
 #include "RGB_lamp.h"
 #include "Stock.h"
 #include "AppConfig.h"
+#include "FirmwareVersion.h"
 
 lv_obj_t * tv = NULL;
 lv_obj_t *Page_panel[50] = {0};
@@ -14,10 +15,12 @@ static uint32_t stock_refresh_interval_ms = 60000;
 static const uint32_t STOCK_RETRY_INTERVAL_MS = 15000;
 static const uint32_t MANUAL_AUTO_RESUME_DELAY_MS = 30000;
 static uint32_t auto_symbol_interval_ms = 12000;
-static const uint8_t VIEW_MODE_COUNT = 2;
 static uint32_t last_auto_symbol_ms = 0;
 static uint32_t manual_pause_until_ms = 0;
 static uint8_t current_view_mode = 0;
+static uint32_t last_rendered_data_version = UINT32_MAX;
+static uint8_t last_rendered_battery_percent = 255;
+static bool last_rendered_stale = false;
 
 typedef enum {
   THEME_CLASSIC = 0,
@@ -28,9 +31,21 @@ static ThemeMode current_theme_mode = THEME_TERMINAL;
 
 static void update_screen(void);
 
+static uint32_t stock_stale_after_ms(void)
+{
+  uint32_t stale_after_ms = stock_refresh_interval_ms * 2UL;
+  return stale_after_ms < 180000UL ? 180000UL : stale_after_ms;
+}
+
+static uint8_t view_mode_count(void)
+{
+  return Stock_IsFxMode() ? 2 : 4;
+}
+
 static lv_obj_t * symbol_label = NULL;
 static lv_obj_t * company_label = NULL;
 static lv_obj_t * page_label = NULL;
+static lv_obj_t * battery_label = NULL;
 static lv_obj_t * content_panel = NULL;
 
 static lv_obj_t * price_page = NULL;
@@ -293,12 +308,11 @@ static void build_screen(void)
   lv_obj_set_style_text_color(screen, color_outer_text(), 0);
 
   outer_panel = lv_obj_create(screen);
-  lv_obj_set_size(outer_panel, 316, 164);
+  lv_obj_set_size(outer_panel, 320, 172);
   lv_obj_align(outer_panel, LV_ALIGN_CENTER, 0, 0);
-  lv_obj_set_style_radius(outer_panel, terminal_theme() ? 2 : 4, 0);
-  lv_obj_set_style_bg_color(outer_panel, color_outer_bg(), 0);
-  lv_obj_set_style_border_width(outer_panel, terminal_theme() ? 1 : 0, 0);
-  lv_obj_set_style_border_color(outer_panel, terminal_theme() ? lv_color_hex(0x1f2d40) : color_outer_bg(), 0);
+  lv_obj_set_style_radius(outer_panel, 0, 0);
+  lv_obj_set_style_bg_color(outer_panel, color_screen_bg(), 0);
+  lv_obj_set_style_border_width(outer_panel, 0, 0);
   lv_obj_set_style_pad_all(outer_panel, 6, 0);
   lv_obj_set_style_shadow_width(outer_panel, 0, 0);
   lv_obj_clear_flag(outer_panel, LV_OBJ_FLAG_SCROLLABLE);
@@ -311,15 +325,19 @@ static void build_screen(void)
   company_label = lv_label_create(outer_panel);
   lv_obj_set_style_text_color(company_label, color_company_text(), 0);
   lv_label_set_long_mode(company_label, LV_LABEL_LONG_CLIP);
-  lv_obj_set_width(company_label, 170);
+  lv_obj_set_width(company_label, 145);
   lv_obj_align(company_label, LV_ALIGN_TOP_LEFT, 70, 2);
 
   page_label = lv_label_create(outer_panel);
   lv_obj_set_style_text_color(page_label, color_page_text(), 0);
-  lv_obj_align(page_label, LV_ALIGN_TOP_RIGHT, 0, 2);
+  lv_obj_align(page_label, LV_ALIGN_TOP_RIGHT, -40, 2);
+
+  battery_label = lv_label_create(outer_panel);
+  lv_obj_set_style_text_color(battery_label, color_page_text(), 0);
+  lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, 0, 2);
 
   content_panel = lv_obj_create(outer_panel);
-  lv_obj_set_size(content_panel, 304, 116);
+  lv_obj_set_size(content_panel, 308, 120);
   lv_obj_align(content_panel, LV_ALIGN_TOP_MID, 0, 28);
   lv_obj_set_style_radius(content_panel, terminal_theme() ? 2 : 4, 0);
   lv_obj_set_style_bg_color(content_panel, color_content_bg(), 0);
@@ -394,11 +412,11 @@ static void build_screen(void)
   lv_obj_set_style_text_font(basics_updated_label, font_meta(), 0);
   lv_obj_align(basics_updated_label, LV_ALIGN_TOP_RIGHT, 0, 1);
 
-  create_meta_pair(profile_page, "Industry", 0, 24, &industry_value_label, 138);
-  create_meta_pair(profile_page, "Country", 154, 24, &country_value_label, 130);
-  create_meta_pair(profile_page, "Mkt Cap", 0, 62, &market_cap_value_label, 138);
-  create_meta_pair(profile_page, "Shares", 100, 62, &shares_out_value_label, 86);
-  create_meta_pair(profile_page, "IPO", 202, 62, &ipo_value_label, 82);
+  create_meta_pair(profile_page, "Industry", 0, 24, &industry_value_label, 150);
+  create_meta_pair(profile_page, "Country", 164, 24, &country_value_label, 128);
+  create_meta_pair(profile_page, "Mkt Cap", 0, 62, &market_cap_value_label, 86);
+  create_meta_pair(profile_page, "Shares", 94, 62, &shares_out_value_label, 80);
+  create_meta_pair(profile_page, "IPO", 182, 62, &ipo_value_label, 110);
 
   trading_page = lv_obj_create(content_panel);
   lv_obj_set_size(trading_page, 304, 116);
@@ -559,7 +577,9 @@ void Lvgl_ShowBootSplash(void)
   lv_obj_t * footer_right = lv_label_create(panel);
   lv_obj_set_style_text_color(footer_right, lv_color_hex(0x5f7691), 0);
   lv_obj_set_style_text_font(footer_right, font_meta(), 0);
-  lv_label_set_text(footer_right, "v1");
+  char version_text[24];
+  snprintf(version_text, sizeof(version_text), "v%s", APP_FIRMWARE_VERSION);
+  lv_label_set_text(footer_right, version_text);
   lv_obj_align(footer_right, LV_ALIGN_BOTTOM_RIGHT, 0, -2);
 }
 
@@ -637,9 +657,15 @@ static void update_screen(void)
   const StockQuote * quote = Stock_CurrentQuote();
   char buffer[64];
   bool fx_mode = Stock_IsFxMode();
+  bool stale = Stock_CurrentIsStale(stock_stale_after_ms());
 
   if(!quote) {
     return;
+  }
+
+  uint8_t mode_count = view_mode_count();
+  if(current_view_mode >= mode_count) {
+    current_view_mode = 0;
   }
 
   lv_label_set_text(symbol_label, quote->symbol);
@@ -650,14 +676,33 @@ static void update_screen(void)
     (unsigned)(current_view_mode + 1));
   lv_label_set_text(page_label, buffer);
 
+  if(BAT_Has_Reading()) {
+    snprintf(buffer, sizeof(buffer), "%u%%", (unsigned)BAT_Get_Percent());
+    lv_label_set_text(battery_label, buffer);
+    if(BAT_Is_Critical()) {
+      lv_obj_set_style_text_color(battery_label, lv_color_hex(0xff4d4f), 0);
+    } else if(BAT_Is_Low()) {
+      lv_obj_set_style_text_color(battery_label, lv_color_hex(0xfacc15), 0);
+    } else {
+      lv_obj_set_style_text_color(battery_label, color_page_text(), 0);
+    }
+  } else {
+    lv_label_set_text(battery_label, "--%");
+    lv_obj_set_style_text_color(battery_label, color_page_text(), 0);
+  }
+
   lv_obj_add_flag(price_page, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(profile_page, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(trading_page, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(trend_page, LV_OBJ_FLAG_HIDDEN);
   if(current_view_mode == 0) {
     lv_obj_clear_flag(price_page, LV_OBJ_FLAG_HIDDEN);
-  } else {
+  } else if(current_view_mode == 1) {
     lv_obj_clear_flag(trading_page, LV_OBJ_FLAG_HIDDEN);
+  } else if(current_view_mode == 2) {
+    lv_obj_clear_flag(trend_page, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_clear_flag(profile_page, LV_OBJ_FLAG_HIDDEN);
   }
 
   if(quote->ready) {
@@ -708,12 +753,45 @@ static void update_screen(void)
   snprintf(buffer, sizeof(buffer), "Quote %s", quote->updated_at);
   lv_label_set_text(basics_updated_label, buffer);
 
-  lv_label_set_text(trading_title_label, "30D Trend");
+  lv_label_set_text(trading_title_label, fx_mode ? "30D Trend" : "Trading");
   snprintf(buffer, sizeof(buffer), "Quote %s", quote->updated_at);
   lv_label_set_text(trading_updated_label, buffer);
-  lv_obj_add_flag(range_bar_bg, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(range_hint_label, LV_OBJ_FLAG_HIDDEN);
-  if(quote->daily_history_count >= 2) {
+  if(!fx_mode) {
+    lv_obj_clear_flag(range_bar_bg, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(range_hint_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(daily_line, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(daily_empty_label, LV_OBJ_FLAG_HIDDEN);
+
+    if(quote->trading_ready) {
+      snprintf(buffer, sizeof(buffer), "%.2f", quote->open);
+      lv_label_set_text(open_value_label, buffer);
+      snprintf(buffer, sizeof(buffer), "%.2f", quote->high);
+      lv_label_set_text(high_value_label, buffer);
+      snprintf(buffer, sizeof(buffer), "%.2f", quote->low);
+      lv_label_set_text(low_value_label, buffer);
+      snprintf(buffer, sizeof(buffer), "%.2f", quote->previous_close);
+      lv_label_set_text(prev_value_label, buffer);
+
+      float range = quote->high - quote->low;
+      int32_t fill_width = 1;
+      if(range > 0.001f) {
+        float position = (quote->price - quote->low) / range;
+        if(position < 0.0f) position = 0.0f;
+        if(position > 1.0f) position = 1.0f;
+        fill_width = (int32_t)(position * 278.0f);
+        if(fill_width < 3) fill_width = 3;
+      }
+      lv_obj_set_width(range_bar_fill, fill_width);
+    } else {
+      lv_label_set_text(open_value_label, "-");
+      lv_label_set_text(high_value_label, "-");
+      lv_label_set_text(low_value_label, "-");
+      lv_label_set_text(prev_value_label, "-");
+      lv_obj_set_width(range_bar_fill, 1);
+    }
+  } else if(quote->daily_history_count >= 2) {
+    lv_obj_add_flag(range_bar_bg, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(range_hint_label, LV_OBJ_FLAG_HIDDEN);
     float min_value = quote->daily_history[0];
     float max_value = quote->daily_history[0];
     for(uint8_t i = 1; i < quote->daily_history_count; i++) {
@@ -750,6 +828,8 @@ static void update_screen(void)
     lv_obj_clear_flag(daily_line, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(daily_empty_label, LV_OBJ_FLAG_HIDDEN);
   } else {
+    lv_obj_add_flag(range_bar_bg, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(range_hint_label, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(open_value_label, "-");
     lv_label_set_text(high_value_label, "-");
     lv_label_set_text(low_value_label, "-");
@@ -811,6 +891,14 @@ static void update_screen(void)
   }
 
   apply_rgb_for_quote(quote);
+  lv_color_t timestamp_color = stale ? lv_color_hex(0xfacc15) : color_meta_title();
+  lv_obj_set_style_text_color(updated_label, stale ? lv_color_hex(0xfacc15) : color_meta_text(), 0);
+  lv_obj_set_style_text_color(basics_updated_label, timestamp_color, 0);
+  lv_obj_set_style_text_color(trading_updated_label, timestamp_color, 0);
+  lv_obj_set_style_text_color(trend_updated_label, timestamp_color, 0);
+  last_rendered_data_version = Stock_DataVersion();
+  last_rendered_battery_percent = BAT_Has_Reading() ? BAT_Get_Percent() : 255;
+  last_rendered_stale = stale;
 }
 
 static void handle_button_action(void)
@@ -822,7 +910,7 @@ static void handle_button_action(void)
     Stock_RequestCurrentIfStale(stock_refresh_interval_ms);
   } else if(BOOT_KEY_State == DoubleClick) {
     mark_user_activity();
-    current_view_mode = (current_view_mode + 1) % VIEW_MODE_COUNT;
+    current_view_mode = (current_view_mode + 1) % view_mode_count();
     update_screen();
     Stock_RequestCurrent();
   } else if(BOOT_KEY_State == LongPressStart) {
@@ -838,16 +926,18 @@ static void handle_button_action(void)
 void IRAM_ATTR example1_increase_lvgl_tick(lv_timer_t * t)
 {
   (void)t;
-  static uint32_t last_screen_update_ms = 0;
   handle_button_action();
   if(WIFI_Connection) {
     Stock_ServiceAutoRefresh(stock_refresh_interval_ms, STOCK_RETRY_INTERVAL_MS);
   }
 
   auto_advance_symbol_if_needed();
-  uint32_t now = millis();
-  if(now - last_screen_update_ms >= 1000) {
-    last_screen_update_ms = now;
+  uint32_t data_version = Stock_DataVersion();
+  uint8_t battery_percent = BAT_Has_Reading() ? BAT_Get_Percent() : 255;
+  bool stale = Stock_CurrentIsStale(stock_stale_after_ms());
+  if(data_version != last_rendered_data_version ||
+     battery_percent != last_rendered_battery_percent ||
+     stale != last_rendered_stale) {
     update_screen();
   }
 }
@@ -857,6 +947,9 @@ void Lvgl_Example1(void)
   current_view_mode = 0;
   last_auto_symbol_ms = millis();
   manual_pause_until_ms = 0;
+  last_rendered_data_version = UINT32_MAX;
+  last_rendered_battery_percent = 255;
+  last_rendered_stale = false;
   stock_refresh_interval_ms = (uint32_t)AppConfig_Get()->refresh_seconds * 1000UL;
   auto_symbol_interval_ms = (uint32_t)AppConfig_Get()->rotate_seconds * 1000UL;
   build_screen();
@@ -906,6 +999,64 @@ void Lvgl_ShowSetupMode(const char * ap_ssid, const char * ap_ip)
   lv_obj_set_style_text_font(line3, font_meta(), 0);
   lv_label_set_text(line3, "Save in browser, then device reboots.");
   lv_obj_align(line3, LV_ALIGN_TOP_LEFT, 0, 96);
+}
+
+void Lvgl_ShowOtaStatus(const char * title_text, const char * detail_text, uint8_t progress)
+{
+  static lv_obj_t * title = NULL;
+  static lv_obj_t * detail = NULL;
+  static lv_obj_t * progress_bar = NULL;
+  static lv_obj_t * progress_label = NULL;
+
+  if(progress == 0 || progress_bar == NULL) {
+    lv_obj_t * screen = lv_scr_act();
+    lv_obj_clean(screen);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0x050c14), 0);
+
+    lv_obj_t * panel = lv_obj_create(screen);
+    lv_obj_set_size(panel, 300, 150);
+    lv_obj_align(panel, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(panel, 6, 0);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0x0d1622), 0);
+    lv_obj_set_style_border_width(panel, 1, 0);
+    lv_obj_set_style_border_color(panel, lv_color_hex(0x243346), 0);
+    lv_obj_set_style_pad_all(panel, 14, 0);
+    lv_obj_set_style_shadow_width(panel, 0, 0);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    title = lv_label_create(panel);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xf4f7fb), 0);
+    lv_obj_set_style_text_font(title, font_title(), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    detail = lv_label_create(panel);
+    lv_obj_set_style_text_color(detail, lv_color_hex(0x90a2b9), 0);
+    lv_obj_set_style_text_font(detail, font_meta_value(), 0);
+    lv_label_set_long_mode(detail, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(detail, 250);
+    lv_obj_align(detail, LV_ALIGN_TOP_LEFT, 0, 36);
+
+    progress_bar = lv_bar_create(panel);
+    lv_obj_set_size(progress_bar, 248, 14);
+    lv_obj_align(progress_bar, LV_ALIGN_TOP_LEFT, 0, 70);
+    lv_obj_set_style_radius(progress_bar, 3, LV_PART_MAIN);
+    lv_obj_set_style_radius(progress_bar, 3, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(progress_bar, lv_color_hex(0x172436), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(progress_bar, lv_color_hex(0x2e8cff), LV_PART_INDICATOR);
+    lv_bar_set_range(progress_bar, 0, 100);
+
+    progress_label = lv_label_create(panel);
+    lv_obj_set_style_text_color(progress_label, lv_color_hex(0x7dc4ff), 0);
+    lv_obj_set_style_text_font(progress_label, font_meta_value(), 0);
+    lv_obj_align(progress_label, LV_ALIGN_BOTTOM_RIGHT, 0, -2);
+  }
+
+  lv_label_set_text(title, title_text ? title_text : "FIRMWARE UPDATE");
+  lv_label_set_text(detail, detail_text ? detail_text : "Preparing update");
+  lv_bar_set_value(progress_bar, progress, LV_ANIM_OFF);
+  char percent_text[8];
+  snprintf(percent_text, sizeof(percent_text), "%u%%", progress);
+  lv_label_set_text(progress_label, percent_text);
 }
 
 void Lvgl_Example1_close(void)

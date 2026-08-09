@@ -13,6 +13,7 @@ bool Scan_finish = false;
 bool TIME_Synced = false;
 char WIFI_IP[32] = "Offline";
 static volatile bool wifi_connect_in_progress = false;
+static TaskHandle_t wifi_reconnect_task_handle = NULL;
 
 static void notify_status(WirelessStatusCallback callback, const char * line1, const char * line2, const char * line3)
 {
@@ -135,6 +136,17 @@ static bool wifi_connect(void)
   WIFI_Connection = false;
   snprintf(WIFI_IP, sizeof(WIFI_IP), "Offline");
   return false;
+}
+
+static void WirelessReconnectTask(void * parameter)
+{
+  (void)parameter;
+  printf("WiFi background reconnect started\r\n");
+  bool connected = wifi_connect();
+  printf("WiFi background reconnect: %s\r\n", connected ? "connected" : "failed");
+  wifi_connect_in_progress = false;
+  wifi_reconnect_task_handle = NULL;
+  vTaskDelete(NULL);
 }
 
 bool Wireless_ConnectSavedWithStatus(WirelessStatusCallback callback)
@@ -293,6 +305,61 @@ bool Wireless_EnsureConnected()
   bool connected = wifi_connect();
   wifi_connect_in_progress = false;
   return connected;
+}
+
+void Wireless_ServiceConnectionState(void)
+{
+  bool connected = WiFi.status() == WL_CONNECTED;
+  if(connected) {
+    if(!WIFI_Connection) {
+      printf("WiFi link restored\r\n");
+    }
+    WIFI_Connection = true;
+    snprintf(WIFI_IP, sizeof(WIFI_IP), "%s", WiFi.localIP().toString().c_str());
+    return;
+  }
+
+  if(WIFI_Connection) {
+    printf("WiFi link lost, status=%d\r\n", WiFi.status());
+  }
+  WIFI_Connection = false;
+  TIME_Synced = false;
+  snprintf(WIFI_IP, sizeof(WIFI_IP), "Offline");
+}
+
+bool Wireless_StartReconnect(void)
+{
+  if(WiFi.status() == WL_CONNECTED) {
+    Wireless_ServiceConnectionState();
+    return true;
+  }
+
+  if(wifi_connect_in_progress || wifi_reconnect_task_handle) {
+    return false;
+  }
+
+  wifi_connect_in_progress = true;
+  BaseType_t result = xTaskCreatePinnedToCore(
+    WirelessReconnectTask,
+    "WiFiReconnectTask",
+    6144,
+    NULL,
+    1,
+    &wifi_reconnect_task_handle,
+    0
+  );
+  if(result != pdPASS) {
+    wifi_connect_in_progress = false;
+    wifi_reconnect_task_handle = NULL;
+    printf("WiFi reconnect task create failed\r\n");
+    return false;
+  }
+  return true;
+}
+
+bool Wireless_ReconnectInProgress(void)
+{
+  return wifi_connect_in_progress || wifi_reconnect_task_handle != NULL;
 }
 
 void Wireless_SyncTimeNow(void)

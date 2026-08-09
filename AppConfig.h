@@ -13,6 +13,8 @@ static const uint16_t APP_DEFAULT_REFRESH_SECONDS = 120;
 static const uint16_t APP_DEFAULT_ROTATE_SECONDS = 12;
 static const bool APP_ENABLE_RGB_LED = false;
 static const bool APP_ENABLE_IMU = false;
+static const bool APP_ENABLE_SD_CARD = false;
+static const bool APP_ENABLE_BOOT_DIAGNOSTICS = false;
 static const uint8_t APP_DISPLAY_MODE_STOCKS = 0;
 static const uint8_t APP_DISPLAY_MODE_FX = 1;
 

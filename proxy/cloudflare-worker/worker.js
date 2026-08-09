@@ -20,6 +20,9 @@ const fxItems = [
 
 const fxMap = new Map(fxItems.map((item) => [item.symbol, item]));
 
+const firmwareAssetName = "esp32-stock-ticker.bin";
+const defaultFirmwareRepository = "reckton0852-star/esp32-stock-ticker";
+
 function resolveSymbol(symbol) {
   const known = symbolMap.get(symbol);
   if (known) {
@@ -34,6 +37,27 @@ function resolveFx(symbol) {
     return known;
   }
   return { symbol, name: symbol, status: `${symbol}/CNY` };
+}
+
+function parseRequestedItems(rawValue, resolver, fallbackItems) {
+  if (!rawValue) {
+    return fallbackItems;
+  }
+
+  const seen = new Set();
+  const items = [];
+  for (const rawSymbol of rawValue.split(",")) {
+    const symbol = rawSymbol.trim().toUpperCase();
+    if (!/^[A-Z0-9._-]{1,12}$/.test(symbol) || seen.has(symbol)) {
+      continue;
+    }
+    seen.add(symbol);
+    items.push(resolver(symbol));
+    if (items.length >= 8) {
+      break;
+    }
+  }
+  return items.length > 0 ? items : fallbackItems;
 }
 
 function json(data, status = 200, extraHeaders = {}) {
@@ -97,6 +121,93 @@ async function fetchJson(url) {
     throw new Error(`HTTP ${response.status}`);
   }
   return response.json();
+}
+
+async function loadLatestFirmware(env) {
+  const repository = env.GITHUB_REPOSITORY || defaultFirmwareRepository;
+  const manifestUrl = env.FIRMWARE_MANIFEST_URL ||
+    `https://raw.githubusercontent.com/${repository}/main/firmware/manifest.json`;
+  const cache = caches.default;
+  const cacheKey = new Request(`https://cache.internal/firmware-release-v2?url=${encodeURIComponent(manifestUrl)}`);
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    return cached.json();
+  }
+
+  let payload;
+  try {
+    const manifestResponse = await fetch(manifestUrl, {
+      headers: { "User-Agent": "eyuxia-stock-ota-worker/1.0" },
+    });
+    if (!manifestResponse.ok) {
+      payload = {
+        ready: false,
+        version: "",
+        error: "No OTA package has been published",
+      };
+    } else {
+      const manifest = await manifestResponse.json();
+      if (!manifest.ready) {
+        payload = {
+          ready: false,
+          version: String(manifest.version || ""),
+          error: String(manifest.error || "No OTA package has been published"),
+        };
+      } else {
+        const assetUrl = new URL(String(manifest.asset_url || ""));
+        const allowedHosts = new Set([
+          "github.com",
+          "objects.githubusercontent.com",
+          "github-releases.githubusercontent.com",
+        ]);
+        const md5 = String(manifest.md5 || "").toLowerCase();
+        const size = Number(manifest.size || 0);
+        if (!allowedHosts.has(assetUrl.hostname) ||
+            !/^v?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(String(manifest.version || "")) ||
+            !/^[a-f0-9]{32}$/.test(md5) || !(size > 0)) {
+          throw new Error("Firmware manifest is invalid");
+        }
+        payload = {
+          ready: true,
+          version: String(manifest.version),
+          notes: String(manifest.notes || "Firmware update").slice(0, 120),
+          md5,
+          size,
+          asset_url: assetUrl.toString(),
+          published_at: String(manifest.published_at || ""),
+        };
+      }
+    }
+  } catch (error) {
+    payload = {
+      ready: false,
+      version: "",
+      error: String(error.message || error),
+    };
+  }
+
+  const response = json(payload, 200, { "cache-control": "public, max-age=300" });
+  await cache.put(cacheKey, response.clone());
+  return payload;
+}
+
+function publicFirmwareManifest(release, origin) {
+  if (!release.ready) {
+    return {
+      ready: false,
+      version: release.version || "",
+      error: release.error || "No OTA firmware is available",
+    };
+  }
+  return {
+    ready: true,
+    version: release.version,
+    notes: release.notes,
+    md5: release.md5,
+    size: release.size,
+    published_at: release.published_at,
+    download_url: `${origin}/firmware/download?version=${encodeURIComponent(release.version)}`,
+  };
 }
 
 async function buildQuotePayload(item, env) {
@@ -275,6 +386,37 @@ export default {
       return json({ ok: true, mode: "cloudflare-worker", symbols: symbols.length, fx: fxItems.length });
     }
 
+    if (url.pathname === "/firmware/manifest") {
+      const release = await loadLatestFirmware(env);
+      return json(publicFirmwareManifest(release, url.origin));
+    }
+
+    if (url.pathname === "/firmware/download") {
+      const release = await loadLatestFirmware(env);
+      const requestedVersion = url.searchParams.get("version") || "";
+      if (!release.ready || requestedVersion !== release.version) {
+        return json({ error: "Requested OTA package is not available" }, 404);
+      }
+
+      const firmwareResponse = await fetch(release.asset_url, {
+        headers: { "User-Agent": "eyuxia-stock-ota-worker/1.0" },
+      });
+      if (!firmwareResponse.ok || !firmwareResponse.body) {
+        return json({ error: `Firmware asset HTTP ${firmwareResponse.status}` }, 502);
+      }
+
+      return new Response(firmwareResponse.body, {
+        status: 200,
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": String(release.size),
+          "content-disposition": `attachment; filename="${firmwareAssetName}"`,
+          "cache-control": "public, max-age=3600, immutable",
+          "x-MD5": release.md5,
+        },
+      });
+    }
+
     if (url.pathname === "/quote") {
       const symbol = (url.searchParams.get("symbol") || "").toUpperCase();
       if (!symbol) {
@@ -340,13 +482,13 @@ export default {
     }
 
     if (url.pathname === "/fxs") {
-      const results = [];
-      for (const item of fxItems) {
+      const requestedItems = parseRequestedItems(url.searchParams.get("bases"), resolveFx, fxItems);
+      const results = await Promise.all(requestedItems.map(async (item) => {
         try {
           const response = await cachedFx(item, request, env);
-          results.push(await response.json());
+          return await response.json();
         } catch (error) {
-          results.push({
+          return {
             symbol: item.symbol,
             name: item.name,
             status: item.status,
@@ -365,20 +507,20 @@ export default {
             shares_out: "-",
             ready: false,
             error: String(error.message || error),
-          });
+          };
         }
-      }
+      }));
       return json(results);
     }
 
     if (url.pathname === "/quotes") {
-      const results = [];
-      for (const item of symbols) {
+      const requestedItems = parseRequestedItems(url.searchParams.get("symbols"), resolveSymbol, symbols);
+      const results = await Promise.all(requestedItems.map(async (item) => {
         try {
           const response = await cachedQuote(item, request, env);
-          results.push(await response.json());
+          return await response.json();
         } catch (error) {
-          results.push({
+          return {
             symbol: item.symbol,
             name: item.name,
             status: item.status,
@@ -397,9 +539,9 @@ export default {
             shares_out: "-",
             ready: false,
             error: String(error.message || error),
-          });
+          };
         }
-      }
+      }));
       return json(results);
     }
 

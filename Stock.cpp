@@ -6,7 +6,7 @@
 #include <WiFiClientSecure.h>
 #include <ctype.h>
 
-static const uint32_t STOCK_HTTP_TIMEOUT_MS = 4000;
+static const uint32_t STOCK_HTTP_TIMEOUT_MS = 12000;
 static const uint32_t STOCK_REQUEST_GAP_MS = 600;
 static const size_t MAX_STOCK_COUNT = 8;
 static StockQuote quotes[MAX_STOCK_COUNT];
@@ -14,7 +14,6 @@ static float quote_history[MAX_STOCK_COUNT][STOCK_TREND_POINTS];
 static uint8_t quote_history_count[MAX_STOCK_COUNT];
 static uint8_t quote_history_next[MAX_STOCK_COUNT];
 const size_t STOCK_COUNT = MAX_STOCK_COUNT;
-static const size_t NO_PENDING_PRIORITY = (size_t)-1;
 static size_t stock_count = 0;
 
 static const char * known_name(const char * symbol)
@@ -45,16 +44,15 @@ static bool fx_mode(void)
 }
 
 static size_t current_index = 0;
-static size_t auto_refresh_index = 0;
-static size_t pending_priority_index = NO_PENDING_PRIORITY;
-static size_t in_flight_index = NO_PENDING_PRIORITY;
 static uint32_t next_request_allowed_ms = 0;
-static bool request_in_flight = false;
+static volatile bool request_in_flight = false;
+static volatile bool batch_request_pending = false;
+static volatile bool network_paused = false;
 static TaskHandle_t stock_worker_handle = NULL;
-static size_t pending_request_index = NO_PENDING_PRIORITY;
+static volatile uint32_t stock_data_version = 0;
 
-static bool queue_stock_request(size_t index);
-static void finish_stock_request(StockQuote * quote);
+static bool queue_batch_request(void);
+static void finish_batch_request(void);
 static void StockWorkerTask(void * parameter);
 
 static void append_quote_history(size_t index, float price)
@@ -230,107 +228,39 @@ static void update_timestamp(StockQuote * quote)
   }
 }
 
-static void perform_stock_request(size_t index)
+static bool extract_json_object_for_symbol(const String& payload, const char * symbol, String * object_payload)
 {
+  if(!symbol || !object_payload) {
+    return false;
+  }
+
+  String needle = String("\"symbol\":\"") + symbol + "\"";
+  int symbol_pos = payload.indexOf(needle);
+  if(symbol_pos < 0) {
+    return false;
+  }
+
+  int object_start = payload.lastIndexOf('{', symbol_pos);
+  int object_end = payload.indexOf('}', symbol_pos);
+  if(object_start < 0 || object_end <= object_start) {
+    return false;
+  }
+
+  *object_payload = payload.substring(object_start, object_end + 1);
+  return true;
+}
+
+static bool apply_quote_payload(size_t index, const String& payload)
+{
+  if(index >= stock_count) {
+    return false;
+  }
+
   StockQuote * quote = &quotes[index];
-
-  if(!WIFI_Connection) {
-    if(!quote->ready) {
-      snprintf(quote->status, sizeof(quote->status), "Wi-Fi offline");
-    }
-    finish_stock_request(quote);
-    return;
-  }
-
-  char url[192];
-  if(fx_mode()) {
-    snprintf(url, sizeof(url),
-      "%s/fx?base=%s",
-      Stock_ProxyBaseUrl(), quote->symbol);
-  } else {
-    snprintf(url, sizeof(url),
-      "%s/quote?symbol=%s",
-      Stock_ProxyBaseUrl(), quote->symbol);
-  }
-  printf("Stock request URL: %s\r\n", url);
-
-  HTTPClient http;
-  bool use_https = strncmp(url, "https://", 8) == 0;
-  WiFiClient client;
-  WiFiClientSecure secure_client;
-
-  if(use_https) {
-    secure_client.setInsecure();
-    secure_client.setTimeout(STOCK_HTTP_TIMEOUT_MS);
-    secure_client.setHandshakeTimeout(12);
-    if(!http.begin(secure_client, url)) {
-      if(!quote->ready) {
-        snprintf(quote->status, sizeof(quote->status), "HTTPS begin fail");
-      }
-      char ssl_error[128] = {0};
-      secure_client.lastError(ssl_error, sizeof(ssl_error));
-      printf("HTTPS begin error %s: %s\r\n", quote->symbol, ssl_error);
-      secure_client.stop();
-      finish_stock_request(quote);
-      return;
-    }
-  } else {
-    client.setTimeout(STOCK_HTTP_TIMEOUT_MS);
-    if(!http.begin(client, url)) {
-      if(!quote->ready) {
-        snprintf(quote->status, sizeof(quote->status), "HTTP begin fail");
-      }
-      client.stop();
-      finish_stock_request(quote);
-      return;
-    }
-  }
-
-  http.setConnectTimeout(STOCK_HTTP_TIMEOUT_MS);
-  http.setTimeout(STOCK_HTTP_TIMEOUT_MS);
-  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-  http.useHTTP10(true);
-  http.addHeader("Connection", "close");
-  http.setUserAgent("esp32-stock-ticker/1.0");
-
-  printf("%s request start: %s via %s\r\n", fx_mode() ? "FX" : "Stock", quote->symbol, use_https ? "https" : "http");
-  int http_code = http.GET();
-  printf("Stock HTTP code %s: %d\r\n", quote->symbol, http_code);
-  if(http_code < 0) {
-    printf("Stock HTTP error %s: %s\r\n", quote->symbol, http_error_text(http_code));
-    if(use_https) {
-      char ssl_error[128] = {0};
-      secure_client.lastError(ssl_error, sizeof(ssl_error));
-      printf("Stock HTTPS detail %s: %s\r\n", quote->symbol, ssl_error);
-    }
-  }
-  if(http_code != HTTP_CODE_OK) {
-    if(!quote->ready) {
-      snprintf(quote->status, sizeof(quote->status), "HTTP %d", http_code);
-    }
-    http.end();
-    if(use_https) {
-      secure_client.stop();
-    } else {
-      client.stop();
-    }
-    finish_stock_request(quote);
-    return;
-  }
-
-  String payload = http.getString();
-  http.end();
-  if(use_https) {
-    secure_client.stop();
-  } else {
-    client.stop();
-  }
-
   float price = 0.0f;
   float change = 0.0f;
   float change_percent = 0.0f;
   char status[32] = {0};
-  char updated_at[24] = {0};
   char industry[32] = {0};
   char country[20] = {0};
   char ipo[16] = {0};
@@ -345,7 +275,6 @@ static void perform_stock_request(size_t index)
   bool ok_low = extract_json_float(payload, "\"l\":", &quote->low);
   bool ok_previous_close = extract_json_float(payload, "\"pc\":", &quote->previous_close);
   bool ok_status = extract_json_string(payload, "\"status\":", status, sizeof(status));
-  bool ok_updated_at = extract_json_string(payload, "\"updated_at\":", updated_at, sizeof(updated_at));
   bool ok_industry = extract_json_string(payload, "\"industry\":", industry, sizeof(industry));
   bool ok_country = extract_json_string(payload, "\"country\":", country, sizeof(country));
   bool ok_ipo = extract_json_string(payload, "\"ipo\":", ipo, sizeof(ipo));
@@ -384,14 +313,138 @@ static void perform_stock_request(size_t index)
     printf("%s ok %s: %.4f %.4f %.2f%%\r\n",
       fx_mode() ? "FX" : "Stock",
       quote->symbol, quote->price, quote->change, quote->change_percent);
+    return true;
   } else {
     if(!quote->ready) {
       snprintf(quote->status, sizeof(quote->status), "Parse fail");
     }
     printf("Stock parse failed: %s\r\n", quote->symbol);
+    return false;
+  }
+}
+
+static String build_batch_url(void)
+{
+  String url = Stock_ProxyBaseUrl();
+  url += fx_mode() ? "/fxs?bases=" : "/quotes?symbols=";
+  for(size_t i = 0; i < stock_count; i++) {
+    if(i > 0) {
+      url += ',';
+    }
+    url += quotes[i].symbol;
+  }
+  return url;
+}
+
+static void set_unready_status(const char * status)
+{
+  for(size_t i = 0; i < stock_count; i++) {
+    if(!quotes[i].ready) {
+      snprintf(quotes[i].status, sizeof(quotes[i].status), "%s", status);
+    }
+  }
+}
+
+static void perform_batch_request(void)
+{
+  if(!WIFI_Connection) {
+    set_unready_status("Wi-Fi offline");
+    finish_batch_request();
+    return;
   }
 
-  finish_stock_request(quote);
+  String url = build_batch_url();
+  printf("%s batch URL: %s\r\n", fx_mode() ? "FX" : "Stock", url.c_str());
+
+  HTTPClient http;
+  bool use_https = url.startsWith("https://");
+  WiFiClient client;
+  WiFiClientSecure secure_client;
+
+  if(use_https) {
+    secure_client.setInsecure();
+    secure_client.setTimeout(STOCK_HTTP_TIMEOUT_MS);
+    secure_client.setHandshakeTimeout(12);
+    if(!http.begin(secure_client, url)) {
+      set_unready_status("HTTPS begin fail");
+      char ssl_error[128] = {0};
+      secure_client.lastError(ssl_error, sizeof(ssl_error));
+      printf("Batch HTTPS begin error: %s\r\n", ssl_error);
+      secure_client.stop();
+      finish_batch_request();
+      return;
+    }
+  } else {
+    client.setTimeout(STOCK_HTTP_TIMEOUT_MS);
+    if(!http.begin(client, url)) {
+      set_unready_status("HTTP begin fail");
+      client.stop();
+      finish_batch_request();
+      return;
+    }
+  }
+
+  http.setConnectTimeout(STOCK_HTTP_TIMEOUT_MS);
+  http.setTimeout(STOCK_HTTP_TIMEOUT_MS);
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  http.useHTTP10(true);
+  http.addHeader("Connection", "close");
+  http.setUserAgent("esp32-stock-ticker/2.1");
+
+  printf("%s batch request start: %u items via %s\r\n",
+    fx_mode() ? "FX" : "Stock", (unsigned)stock_count, use_https ? "https" : "http");
+  int http_code = http.GET();
+  printf("%s batch HTTP code: %d\r\n", fx_mode() ? "FX" : "Stock", http_code);
+  if(http_code < 0) {
+    printf("Batch HTTP error: %s\r\n", http_error_text(http_code));
+    if(use_https) {
+      char ssl_error[128] = {0};
+      secure_client.lastError(ssl_error, sizeof(ssl_error));
+      printf("Batch HTTPS detail: %s\r\n", ssl_error);
+    }
+  }
+
+  if(http_code != HTTP_CODE_OK) {
+    char error_status[24];
+    snprintf(error_status, sizeof(error_status), "HTTP %d", http_code);
+    set_unready_status(error_status);
+    http.end();
+    if(use_https) {
+      secure_client.stop();
+    } else {
+      client.stop();
+    }
+    finish_batch_request();
+    return;
+  }
+
+  String payload = http.getString();
+  http.end();
+  if(use_https) {
+    secure_client.stop();
+  } else {
+    client.stop();
+  }
+
+  size_t success_count = 0;
+  for(size_t i = 0; i < stock_count; i++) {
+    String object_payload;
+    if(!extract_json_object_for_symbol(payload, quotes[i].symbol, &object_payload)) {
+      printf("Batch item missing: %s\r\n", quotes[i].symbol);
+      continue;
+    }
+    if(apply_quote_payload(i, object_payload)) {
+      success_count++;
+    }
+  }
+
+  if(success_count > 0) {
+    stock_data_version = stock_data_version + 1;
+  }
+  printf("%s batch complete: %u/%u updated\r\n",
+    fx_mode() ? "FX" : "Stock", (unsigned)success_count, (unsigned)stock_count);
+
+  finish_batch_request();
 }
 
 static void StockWorkerTask(void * parameter)
@@ -399,21 +452,18 @@ static void StockWorkerTask(void * parameter)
   (void)parameter;
 
   for(;;) {
-    if(request_in_flight && in_flight_index < stock_count) {
-      perform_stock_request(in_flight_index);
-      continue;
-    }
-
     uint32_t now = millis();
-    if(!request_in_flight &&
-       pending_request_index < stock_count &&
+    if(!network_paused &&
+       !request_in_flight &&
+       batch_request_pending &&
        (next_request_allowed_ms == 0 || (int32_t)(now - next_request_allowed_ms) >= 0)) {
-      size_t index = pending_request_index;
-      pending_request_index = NO_PENDING_PRIORITY;
-      in_flight_index = index;
+      batch_request_pending = false;
       request_in_flight = true;
-      quotes[index].loading = true;
-      quotes[index].last_attempt_ms = now;
+      for(size_t i = 0; i < stock_count; i++) {
+        quotes[i].loading = true;
+        quotes[i].last_attempt_ms = now;
+      }
+      perform_batch_request();
       continue;
     }
 
@@ -421,49 +471,30 @@ static void StockWorkerTask(void * parameter)
   }
 }
 
-static void finish_stock_request(StockQuote * quote)
+static void finish_batch_request(void)
 {
-  if(quote) {
-    quote->loading = false;
+  for(size_t i = 0; i < stock_count; i++) {
+    quotes[i].loading = false;
   }
   request_in_flight = false;
-  in_flight_index = NO_PENDING_PRIORITY;
   next_request_allowed_ms = millis() + STOCK_REQUEST_GAP_MS;
 }
 
-static bool queue_stock_request(size_t index)
+static bool queue_batch_request(void)
 {
-  if(index >= stock_count) {
+  if(network_paused || stock_count == 0 || batch_request_pending || request_in_flight) {
     return false;
   }
-
-  uint32_t now = millis();
-  if(pending_request_index == index || in_flight_index == index) {
-    return false;
-  }
-
-  if(request_in_flight) {
-    pending_request_index = index;
-    return false;
-  }
-
-  if(next_request_allowed_ms != 0 && (int32_t)(now - next_request_allowed_ms) < 0) {
-    pending_request_index = index;
-    return false;
-  }
-
-  pending_request_index = index;
+  batch_request_pending = true;
   return true;
 }
 
 void Stock_Init(void)
 {
   current_index = 0;
-  auto_refresh_index = 0;
-  pending_priority_index = current_index;
-  pending_request_index = NO_PENDING_PRIORITY;
   request_in_flight = false;
-  in_flight_index = NO_PENDING_PRIORITY;
+  batch_request_pending = false;
+  network_paused = false;
   next_request_allowed_ms = 0;
 
   const AppConfigData * config = AppConfig_Get();
@@ -511,6 +542,8 @@ void Stock_Init(void)
       0
     );
   }
+
+  queue_batch_request();
 }
 
 void Stock_Next(void)
@@ -576,9 +609,7 @@ bool Stock_IsFxMode(void)
 
 void Stock_RequestCurrent(void)
 {
-  if(!queue_stock_request(current_index)) {
-    pending_priority_index = current_index;
-  }
+  queue_batch_request();
 }
 
 bool Stock_RequestCurrentIfStale(uint32_t min_interval_ms)
@@ -589,12 +620,7 @@ bool Stock_RequestCurrentIfStale(uint32_t min_interval_ms)
     return false;
   }
 
-  if(request_in_flight) {
-    pending_priority_index = current_index;
-    return false;
-  }
-
-  return queue_stock_request(current_index);
+  return queue_batch_request();
 }
 
 static bool quote_needs_refresh(const StockQuote * quote, uint32_t now, uint32_t refresh_interval_ms, uint32_t retry_interval_ms)
@@ -610,34 +636,51 @@ static bool quote_needs_refresh(const StockQuote * quote, uint32_t now, uint32_t
 
 void Stock_ServiceAutoRefresh(uint32_t refresh_interval_ms, uint32_t retry_interval_ms)
 {
-  if(request_in_flight) {
+  if(network_paused || request_in_flight || batch_request_pending) {
     return;
   }
 
   uint32_t now = millis();
-  if(pending_priority_index < stock_count) {
-    size_t index = pending_priority_index;
-    pending_priority_index = NO_PENDING_PRIORITY;
-    if(queue_stock_request(index)) {
-      printf("Stock priority refresh: %s\r\n", quotes[index].symbol);
+  for(size_t i = 0; i < stock_count; i++) {
+    if(quote_needs_refresh(&quotes[i], now, refresh_interval_ms, retry_interval_ms)) {
+      if(queue_batch_request()) {
+        printf("%s batch refresh queued: %u items\r\n",
+          fx_mode() ? "FX" : "Stock", (unsigned)stock_count);
+      }
       return;
     }
   }
+}
 
-  for(size_t step = 0; step < stock_count; step++) {
-    size_t index = (auto_refresh_index + step) % stock_count;
-    StockQuote * quote = &quotes[index];
-    if(quote_needs_refresh(quote, now, refresh_interval_ms, retry_interval_ms)) {
-      if(queue_stock_request(index)) {
-        auto_refresh_index = (index + 1) % stock_count;
-        printf("Stock auto refresh: %s\r\n", quote->symbol);
-        return;
-      }
-    }
+void Stock_SetNetworkPaused(bool paused)
+{
+  network_paused = paused;
+  if(paused) {
+    batch_request_pending = false;
   }
+}
+
+bool Stock_NetworkIdle(void)
+{
+  return !request_in_flight && !batch_request_pending;
+}
+
+bool Stock_CurrentIsStale(uint32_t stale_after_ms)
+{
+  if(current_index >= stock_count || stale_after_ms == 0) {
+    return false;
+  }
+
+  const StockQuote * quote = &quotes[current_index];
+  return quote->ready && quote->last_fetch_ms != 0 && millis() - quote->last_fetch_ms >= stale_after_ms;
 }
 
 const char * Stock_ProxyBaseUrl(void)
 {
   return AppConfig_Get()->proxy_base_url;
+}
+
+uint32_t Stock_DataVersion(void)
+{
+  return stock_data_version;
 }

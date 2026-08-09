@@ -2,7 +2,7 @@
 
 A compact US stock ticker for the Waveshare `ESP32-S3-LCD-1.47B` board.
 
-It shows one market item at a time on the 1.47 inch LCD, supports button switching, four-page viewing, automatic symbol rotation, and either a local or cloud proxy for more stable updates.
+It shows one market item at a time on the 1.47 inch LCD, supports button switching, mode-specific pages, automatic symbol rotation, and either a local or cloud proxy for more stable updates.
 
 ## Current Release
 
@@ -22,14 +22,19 @@ This version adds a more product-like boot flow:
 ## Features
 
 - Landscape stock card UI for the 1.47 inch LCD
-- Two-page mode:
-  - Page 1: quote, change percent, market, update time
-  - Page 2: 30 day trend line
+- Stocks mode has four pages:
+  - P1: price, change percent, market, update time
+  - P2: open, high, low, previous close
+  - P3: intraday trend line from collected successful quotes
+  - P4: company basics
+- FX mode has two pages:
+  - P1: FX rate, change percent, pair, update time
+  - P2: 30 day trend line
 - Single click: next symbol
 - Long press: previous symbol
-- Double click: switch between quote page and 30D trend page
+- Double click: switch page within the current display mode
 - Any button action pauses automatic symbol rotation for 30 seconds
-- Automatic background refresh every 60 seconds
+- Configurable background refresh, default 120 seconds
 - Automatic symbol rotation every 12 seconds
 - Keeps the last successful price on screen while refreshing
 - Up = red box, red LED
@@ -44,6 +49,12 @@ This version adds a more product-like boot flow:
 - Cloudflare custom domain support, for example `https://stock.your-domain.com`
 - VPS HTTP proxy option for the best ESP32 compatibility
 - Low-power defaults: RGB LED disabled and IMU powered down
+- Compact battery percentage in the header, sampled once per minute
+- Low battery warning: yellow below 20%, red below 10%
+- Runtime WiFi health checks with background reconnect and setup-mode fallback
+- OTA online firmware updates from the browser setup page
+- Dual application partitions with download integrity verification
+- SD card and boot Flash diagnostics disabled by default; the ticker does not require an SD card
 
 ## Current Symbols
 
@@ -65,9 +76,16 @@ FX mode:
 
 ## Pages
 
-The screen has two pages:
+Stocks mode has four pages:
 
 - P1 Price: quote, change percent, market, update time
+- P2 Trading: open, high, low, previous close
+- P3 Intraday Trend: a continuous line from successful prices collected while the device is running
+- P4 Company: industry, country, market cap, shares outstanding, IPO date
+
+FX mode has two pages:
+
+- P1 Rate: exchange rate, previous-day change percent, pair, update time
 - P2 30D Trend: recent 30 point history line with start, high, low, latest values
 
 FX data is daily reference data from Frankfurter. It is useful for a desktop reference screen, not for trading-grade realtime FX.
@@ -127,7 +145,9 @@ Use this if:
 - Install Arduino IDE
 - Install the ESP32 board package
 - Select board: `ESP32S3 Dev Module`
-- Select a large partition scheme such as `Huge APP`
+- Select Flash Size: `16MB (128Mb)`
+- Select Partition Scheme: `Custom` when available
+- Keep the project `partitions.csv`; it defines two 6.25MB OTA application slots
 
 ### 2. LVGL Font Settings
 
@@ -230,7 +250,7 @@ After power-on the device now behaves like this:
    - start hotspot `Reckton-Stock-Setup`
    - open setup UI on `http://192.168.4.1`
 
-You can also long press the `BOOT` button while running to enter setup mode manually.
+You can also hold the `BOOT` button for 4 seconds while running to enter setup mode manually.
 
 ## Setup Mode
 
@@ -250,6 +270,13 @@ The setup page currently supports:
 - refresh interval
 - auto rotate interval
 - display brightness
+- firmware version check and online update when the device has internet access
+
+## OTA Firmware Update
+
+The OTA-capable baseline must be uploaded once over USB because the previous `Huge APP` layout only had one application slot. After that first full upload, future releases can be installed from the Setup page.
+
+See [OTA update guide](docs/OTA_UPDATE_ZH.md) for the user flow and release process.
 
 ## Proxy API
 
@@ -287,6 +314,7 @@ Example response:
 - if the selected proxy is unavailable, the board keeps the last successful quote on screen
 - if a refresh fails, the old price is not cleared
 - for best ESP32 stability this project prefers HTTP from ESP32 to your proxy/custom domain
+- battery percentage is estimated from voltage; after installing the battery, compare it with a multimeter once and calibrate `Measurement_offset` if needed
 
 ## Troubleshooting
 

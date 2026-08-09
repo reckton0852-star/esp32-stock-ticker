@@ -21,4 +21,5 @@ void Lvgl_Example1_close(void);
 void Lvgl_ShowBootSplash(void);
 void Lvgl_ShowWifiScanStatus(const char * line1, const char * line2, const char * line3);
 void Lvgl_ShowSetupMode(const char * ap_ssid, const char * ap_ip);
+void Lvgl_ShowOtaStatus(const char * title, const char * detail, uint8_t progress);
 void LVGL_Backlight_adjustment(uint8_t Backlight);

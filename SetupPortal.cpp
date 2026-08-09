@@ -1,5 +1,7 @@
 #include "SetupPortal.h"
 #include "AppConfig.h"
+#include "FirmwareVersion.h"
+#include "OtaUpdater.h"
 #include <WiFi.h>
 #include <DNSServer.h>
 #include <WebServer.h>
@@ -12,6 +14,8 @@ static DNSServer dns_server;
 static WebServer web_server(80);
 static bool portal_active = false;
 static bool reboot_requested = false;
+static bool ota_requested = false;
+static bool routes_registered = false;
 static String ap_ip = "192.168.4.1";
 
 static String html_escape(const String& value)
@@ -28,16 +32,17 @@ static String form_page(const String& notice = "")
 {
   const AppConfigData * config = AppConfig_Get();
   String html;
-  html.reserve(4096);
+  html.reserve(6144);
   html += "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
   html += "<title>Stock Ticker Setup</title><style>";
   html += "body{font-family:Arial,sans-serif;background:#0b1320;color:#e6edf7;margin:0;padding:20px;}";
   html += ".wrap{max-width:680px;margin:0 auto;background:#111c2b;border:1px solid #243346;border-radius:12px;padding:20px;}";
-  html += "h1{margin-top:0;font-size:24px;}label{display:block;margin:14px 0 6px;font-size:14px;color:#9fb0c7;}";
+  html += "h1{margin-top:0;font-size:24px;}h2{margin:26px 0 8px;font-size:18px;}label{display:block;margin:14px 0 6px;font-size:14px;color:#9fb0c7;}";
   html += "input,select{width:100%;box-sizing:border-box;padding:12px;border-radius:8px;border:1px solid #30445d;background:#0a111b;color:#f3f7fb;}";
   html += ".row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}.notice{margin:0 0 16px;padding:12px;border-radius:8px;background:#17324d;color:#d9ecff;}";
-  html += "button{margin-top:18px;width:100%;padding:14px;border:0;border-radius:10px;background:#2563eb;color:white;font-size:16px;font-weight:700;}";
-  html += "small{display:block;margin-top:16px;color:#7f93ad;line-height:1.5;}</style></head><body><div class='wrap'>";
+  html += "button{margin-top:14px;width:100%;padding:13px;border:0;border-radius:8px;background:#2563eb;color:white;font-size:15px;font-weight:700;}";
+  html += "button.secondary{background:#20334a;border:1px solid #36506d;}button:disabled{opacity:.5}.ota{margin-top:24px;padding-top:4px;border-top:1px solid #243346;}";
+  html += ".meta{color:#9fb0c7;line-height:1.55;font-size:14px}.ok{color:#83d7a6}.warn{color:#ffd27d}small{display:block;margin-top:16px;color:#7f93ad;line-height:1.5;}</style></head><body><div class='wrap'>";
   html += "<h1>Stock Ticker Setup</h1>";
   if(notice.length() > 0) {
     html += "<div class='notice'>" + notice + "</div>";
@@ -68,6 +73,26 @@ static String form_page(const String& notice = "")
   html += "<div><label>Brightness (10-100)</label><input name='bright' value='" + String(config->brightness) + "'></div>";
   html += "<div></div></div>";
   html += "<button type='submit'>Save and Reboot</button></form>";
+  const OtaManifest * manifest = OtaUpdater_GetManifest();
+  html += "<div class='ota'><h2>Firmware Update</h2>";
+  html += "<div class='meta'>Current version: <b>v" + String(APP_FIRMWARE_VERSION) + "</b><br>";
+  html += String("Internet: <b class='") + (WiFi.status() == WL_CONNECTED ? "ok'>connected" : "warn'>not connected") + "</b>";
+  if(manifest->checked && manifest->ready) {
+    html += "<br>Latest version: <b>" + html_escape(manifest->version) + "</b>";
+    if(strlen(manifest->notes) > 0) {
+      html += "<br>Notes: " + html_escape(manifest->notes);
+    }
+    html += manifest->update_available ? "<br><span class='ok'>A new version is ready.</span>" : "<br><span class='ok'>This device is up to date.</span>";
+  } else if(manifest->checked) {
+    html += "<br><span class='warn'>" + html_escape(manifest->error) + "</span>";
+  }
+  html += "</div><form method='post' action='/ota/check'><button class='secondary' type='submit'";
+  if(WiFi.status() != WL_CONNECTED) html += " disabled";
+  html += ">Check for Update</button></form>";
+  if(manifest->checked && manifest->ready && manifest->update_available) {
+    html += "<form method='post' action='/ota/install'><button type='submit'>Install v" + html_escape(manifest->version) + "</button></form>";
+  }
+  html += "<small>Keep power connected during installation. The device restarts automatically when the update is complete.</small></div>";
   html += "<small>Connect your phone to the ESP32 hotspot, open <b>http://192.168.4.1</b>, save, and wait for automatic reboot.</small>";
   html += "</div></body></html>";
   return html;
@@ -128,6 +153,34 @@ static void handle_save()
     "<body style='font-family:Arial;background:#0b1320;color:#e6edf7;padding:24px;'><h2>Saved</h2><p>The ESP32 will reboot in a few seconds.</p></body></html>");
 }
 
+static void handle_ota_check()
+{
+  bool ok = OtaUpdater_Check();
+  String notice;
+  if(ok) {
+    const OtaManifest * manifest = OtaUpdater_GetManifest();
+    notice = manifest->update_available ? "A new firmware version is available." : "The firmware is already up to date.";
+  } else {
+    notice = String("Update check failed: ") + OtaUpdater_LastError();
+  }
+  web_server.send(200, "text/html; charset=utf-8", form_page(html_escape(notice)));
+}
+
+static void handle_ota_install()
+{
+  const OtaManifest * manifest = OtaUpdater_GetManifest();
+  if(!manifest->ready || !manifest->update_available || WiFi.status() != WL_CONNECTED) {
+    web_server.send(409, "text/html; charset=utf-8", form_page("No online firmware update is ready to install."));
+    return;
+  }
+
+  ota_requested = true;
+  web_server.send(200, "text/html; charset=utf-8",
+    "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
+    "<body style='font-family:Arial;background:#0b1320;color:#e6edf7;padding:24px;'><h2>Installing Update</h2>"
+    "<p>Keep the device powered. Follow the progress on the ESP32 screen.</p></body></html>");
+}
+
 static void handle_not_found()
 {
   web_server.sendHeader("Location", String("http://") + ap_ip + "/", true);
@@ -136,25 +189,34 @@ static void handle_not_found()
 
 void SetupPortal_Begin(void)
 {
-  WiFi.disconnect(true, true);
-  delay(100);
-  WiFi.mode(WIFI_AP);
+  bool keep_station = WiFi.status() == WL_CONNECTED;
+  if(!keep_station) {
+    WiFi.disconnect(false, false);
+    delay(100);
+  }
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_SSID, AP_PASSWORD);
   ap_ip = WiFi.softAPIP().toString();
 
   dns_server.start(DNS_PORT, "*", WiFi.softAPIP());
-  web_server.on("/", HTTP_GET, handle_root);
-  web_server.on("/save", HTTP_POST, handle_save);
-  web_server.on("/generate_204", HTTP_GET, handle_root);
-  web_server.on("/hotspot-detect.html", HTTP_GET, handle_root);
-  web_server.on("/connecttest.txt", HTTP_GET, handle_root);
-  web_server.on("/fwlink", HTTP_GET, handle_root);
-  web_server.onNotFound(handle_not_found);
+  if(!routes_registered) {
+    web_server.on("/", HTTP_GET, handle_root);
+    web_server.on("/save", HTTP_POST, handle_save);
+    web_server.on("/ota/check", HTTP_POST, handle_ota_check);
+    web_server.on("/ota/install", HTTP_POST, handle_ota_install);
+    web_server.on("/generate_204", HTTP_GET, handle_root);
+    web_server.on("/hotspot-detect.html", HTTP_GET, handle_root);
+    web_server.on("/connecttest.txt", HTTP_GET, handle_root);
+    web_server.on("/fwlink", HTTP_GET, handle_root);
+    web_server.onNotFound(handle_not_found);
+    routes_registered = true;
+  }
   web_server.begin();
 
   portal_active = true;
   reboot_requested = false;
-  printf("Setup portal started: SSID=%s IP=%s\r\n", AP_SSID, ap_ip.c_str());
+  ota_requested = false;
+  printf("Setup portal started: SSID=%s IP=%s internet=%s\r\n", AP_SSID, ap_ip.c_str(), keep_station ? "yes" : "no");
 }
 
 void SetupPortal_Handle(void)
@@ -174,6 +236,16 @@ bool SetupPortal_IsActive(void)
 bool SetupPortal_ShouldReboot(void)
 {
   return reboot_requested;
+}
+
+bool SetupPortal_ShouldStartOta(void)
+{
+  return ota_requested;
+}
+
+void SetupPortal_ClearOtaRequest(void)
+{
+  ota_requested = false;
 }
 
 const char * SetupPortal_ApSsid(void)

@@ -14,9 +14,11 @@ This folder contains a cloud relay version of the stock proxy.
 
 - `/health`: service status
 - `/quote?symbol=AAPL`: one stock quote
-- `/quotes`: configured stock quote list
+- `/quotes?symbols=WDC,MU,AAPL`: dynamic stock quote list, up to 8 symbols
 - `/fx?base=USD`: one FX rate against CNY
-- `/fxs`: configured FX rate list
+- `/fxs?bases=USD,EUR,GBP,CAD`: dynamic FX rate list, up to 8 bases
+- `/firmware/manifest`: OTA release metadata from `firmware/manifest.json`
+- `/firmware/download?version=v2.2.0`: validated firmware release stream
 
 ## Files
 
@@ -60,3 +62,13 @@ Then set:
 ```cpp
 static const char * STOCK_PROXY_BASE_URL = "https://stock.your-domain.com";
 ```
+
+## OTA Publishing
+
+The Worker reads the small static manifest from:
+
+```text
+https://raw.githubusercontent.com/reckton0852-star/esp32-stock-ticker/main/firmware/manifest.json
+```
+
+The manifest points to a GitHub Release asset. This avoids GitHub API rate limits. Keep the manifest disabled until the matching release asset and MD5 file are publicly downloadable.

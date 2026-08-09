@@ -44,4 +44,8 @@ bool Stock_IsFxMode(void);
 void Stock_RequestCurrent(void);
 bool Stock_RequestCurrentIfStale(uint32_t min_interval_ms);
 void Stock_ServiceAutoRefresh(uint32_t refresh_interval_ms, uint32_t retry_interval_ms);
+bool Stock_CurrentIsStale(uint32_t stale_after_ms);
+void Stock_SetNetworkPaused(bool paused);
+bool Stock_NetworkIdle(void);
 const char * Stock_ProxyBaseUrl(void);
+uint32_t Stock_DataVersion(void);
