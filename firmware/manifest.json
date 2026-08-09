@@ -1,10 +1,10 @@
 {
-  "ready": false,
-  "version": "",
-  "notes": "",
-  "md5": "",
-  "size": 0,
-  "asset_url": "",
-  "published_at": "",
-  "error": "No OTA package has been published"
+    "ready":  true,
+    "version":  "v2.1.1",
+    "notes":  "First OTA verification release; same validated features as v2.1.0.",
+    "md5":  "5f3577e7d19dc343d2147c90ee64d27a",
+    "size":  1497856,
+    "asset_url":  "https://github.com/reckton0852-star/esp32-stock-ticker/releases/download/v2.1.1/esp32-stock-ticker.bin",
+    "published_at":  "2026-08-09T17:14:45Z",
+    "error":  ""
 }
