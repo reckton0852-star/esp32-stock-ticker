@@ -72,21 +72,29 @@ static void run_pending_ota(void)
 {
   SetupPortal_ClearOtaRequest();
   Stock_SetNetworkPaused(true);
-  Lvgl_ShowOtaStatus("FIRMWARE UPDATE", "Waiting for network task", 0);
+  Lvgl_ShowOtaStatus("FIRMWARE UPDATE", "Finishing market request", 0);
 
   uint32_t wait_started = millis();
-  while(!Stock_NetworkIdle() && millis() - wait_started < 15000) {
+  uint32_t last_wait_log_ms = 0;
+  while(!Stock_NetworkIdle() && millis() - wait_started < 30000) {
+    uint32_t elapsed_ms = millis() - wait_started;
+    if(last_wait_log_ms == 0 || elapsed_ms - last_wait_log_ms >= 1000) {
+      last_wait_log_ms = elapsed_ms;
+      printf("OTA waiting for stock network idle: %lu ms\r\n", (unsigned long)elapsed_ms);
+    }
     Timer_Loop();
     delay(20);
   }
   if(!Stock_NetworkIdle()) {
     Lvgl_ShowOtaStatus("UPDATE FAILED", "Network is still busy", 0);
     printf("OTA cancelled: stock network task did not become idle\r\n");
+    Stock_SetNetworkPaused(false);
     delay(1800);
     Lvgl_ShowSetupMode(SetupPortal_ApSsid(), SetupPortal_ApIp());
     return;
   }
 
+  printf("OTA network handoff ready\r\n");
   delay(250);
   bool updated = OtaUpdater_Install(ota_progress_callback);
   if(updated) {
@@ -97,6 +105,7 @@ static void run_pending_ota(void)
   }
 
   Lvgl_ShowOtaStatus("UPDATE FAILED", OtaUpdater_LastError(), 0);
+  Stock_SetNetworkPaused(false);
   Timer_Loop();
   delay(2200);
   Lvgl_ShowSetupMode(SetupPortal_ApSsid(), SetupPortal_ApIp());

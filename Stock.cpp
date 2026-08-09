@@ -48,6 +48,7 @@ static uint32_t next_request_allowed_ms = 0;
 static volatile bool request_in_flight = false;
 static volatile bool batch_request_pending = false;
 static volatile bool network_paused = false;
+static volatile bool network_quiesced = false;
 static TaskHandle_t stock_worker_handle = NULL;
 static volatile uint32_t stock_data_version = 0;
 
@@ -452,9 +453,17 @@ static void StockWorkerTask(void * parameter)
   (void)parameter;
 
   for(;;) {
+    if(network_paused) {
+      if(!request_in_flight) {
+        network_quiesced = true;
+      }
+      vTaskDelay(pdMS_TO_TICKS(25));
+      continue;
+    }
+
+    network_quiesced = false;
     uint32_t now = millis();
-    if(!network_paused &&
-       !request_in_flight &&
+    if(!request_in_flight &&
        batch_request_pending &&
        (next_request_allowed_ms == 0 || (int32_t)(now - next_request_allowed_ms) >= 0)) {
       batch_request_pending = false;
@@ -495,6 +504,7 @@ void Stock_Init(void)
   request_in_flight = false;
   batch_request_pending = false;
   network_paused = false;
+  network_quiesced = false;
   next_request_allowed_ms = 0;
 
   const AppConfigData * config = AppConfig_Get();
@@ -657,12 +667,18 @@ void Stock_SetNetworkPaused(bool paused)
   network_paused = paused;
   if(paused) {
     batch_request_pending = false;
+    network_quiesced = false;
+  } else {
+    network_quiesced = false;
   }
 }
 
 bool Stock_NetworkIdle(void)
 {
-  return !request_in_flight && !batch_request_pending;
+  if(!stock_worker_handle) {
+    return !request_in_flight && !batch_request_pending;
+  }
+  return network_paused && network_quiesced && !request_in_flight && !batch_request_pending;
 }
 
 bool Stock_CurrentIsStale(uint32_t stale_after_ms)
