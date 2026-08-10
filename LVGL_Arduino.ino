@@ -51,15 +51,13 @@
 static bool setup_mode = false;
 static bool stock_ui_started = false;
 static uint32_t wifi_offline_since_ms = 0;
-static const uint32_t AUTO_SETUP_WIFI_TIMEOUT_MS = 45000;
 static uint32_t setup_button_hold_since_ms = 0;
 static bool setup_button_armed = true;
-static uint32_t last_time_sync_attempt_ms = 0;
-static const uint32_t TIME_SYNC_RETRY_MS = 30000;
 static uint32_t last_wifi_state_check_ms = 0;
 static uint32_t last_wifi_reconnect_attempt_ms = 0;
 static const uint32_t WIFI_STATE_CHECK_INTERVAL_MS = 1000;
 static const uint32_t WIFI_RECONNECT_INTERVAL_MS = 15000;
+static const uint32_t INITIAL_MARKET_DATA_TIMEOUT_MS = 20000;
 
 static void ota_progress_callback(uint8_t percent, const char * status)
 {
@@ -216,13 +214,28 @@ void setup()
     printf("WiFi bootstrap done: %s\r\n", wifi_ready ? "connected" : "failed");
 
     if(wifi_ready) {
-      Wireless_SyncTimeNow();
       printf("Stock init start\r\n");
       Stock_Init();
       printf("Stock init done\r\n");
-      Lvgl_Example1();
-      printf("Stock UI ready\r\n");
-      stock_ui_started = true;
+      Lvgl_ShowWifiScanStatus("Market Data", "Checking cloud service...", "Waiting for first quote");
+
+      uint32_t market_wait_started_ms = millis();
+      while(Stock_DataVersion() == 0 &&
+            WiFi.status() == WL_CONNECTED &&
+            millis() - market_wait_started_ms < INITIAL_MARKET_DATA_TIMEOUT_MS) {
+        Timer_Loop();
+        delay(20);
+      }
+
+      if(Stock_DataVersion() > 0) {
+        printf("Initial market data ready\r\n");
+        Lvgl_Example1();
+        printf("Stock UI ready\r\n");
+        stock_ui_started = true;
+      } else {
+        printf("Initial market data unavailable; entering setup mode\r\n");
+        enter_setup_mode();
+      }
     } else {
       setup_mode = true;
       SetupPortal_Begin();
@@ -263,15 +276,10 @@ void loop()
     if(WIFI_Connection) {
       wifi_offline_since_ms = 0;
       last_wifi_reconnect_attempt_ms = 0;
-      if(!TIME_Synced && (last_time_sync_attempt_ms == 0 || now - last_time_sync_attempt_ms > TIME_SYNC_RETRY_MS)) {
-        last_time_sync_attempt_ms = now;
-        Wireless_SyncTimeNow();
-      }
     } else {
       if(wifi_offline_since_ms == 0) {
         wifi_offline_since_ms = now;
-      } else if(now - wifi_offline_since_ms > AUTO_SETUP_WIFI_TIMEOUT_MS && !Wireless_ReconnectInProgress()) {
-        enter_setup_mode();
+        printf("WiFi offline; keeping stock UI and retrying saved networks\r\n");
       } else if(now - wifi_offline_since_ms >= 5000 &&
                 (last_wifi_reconnect_attempt_ms == 0 || now - last_wifi_reconnect_attempt_ms >= WIFI_RECONNECT_INTERVAL_MS)) {
         if(Wireless_StartReconnect()) {

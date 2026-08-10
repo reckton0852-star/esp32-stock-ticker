@@ -218,17 +218,6 @@ static void copy_or_default(char * dest, size_t dest_size, bool ok, const char *
   snprintf(dest, dest_size, "%s", (ok && value && value[0] != '\0') ? value : fallback);
 }
 
-static void update_timestamp(StockQuote * quote)
-{
-  struct tm timeinfo;
-  if(Wireless_GetLocalTime(&timeinfo)) {
-    snprintf(quote->updated_at, sizeof(quote->updated_at), "%02d:%02d",
-      timeinfo.tm_hour, timeinfo.tm_min);
-  } else {
-    snprintf(quote->updated_at, sizeof(quote->updated_at), "--:--");
-  }
-}
-
 static bool extract_json_object_for_symbol(const String& payload, const char * symbol, String * object_payload)
 {
   if(!symbol || !object_payload) {
@@ -262,6 +251,7 @@ static bool apply_quote_payload(size_t index, const String& payload)
   float change = 0.0f;
   float change_percent = 0.0f;
   char status[32] = {0};
+  char updated_at[24] = {0};
   char industry[32] = {0};
   char country[20] = {0};
   char ipo[16] = {0};
@@ -276,6 +266,7 @@ static bool apply_quote_payload(size_t index, const String& payload)
   bool ok_low = extract_json_float(payload, "\"l\":", &quote->low);
   bool ok_previous_close = extract_json_float(payload, "\"pc\":", &quote->previous_close);
   bool ok_status = extract_json_string(payload, "\"status\":", status, sizeof(status));
+  bool ok_updated_at = extract_json_string(payload, "\"updated_at\":", updated_at, sizeof(updated_at));
   bool ok_industry = extract_json_string(payload, "\"industry\":", industry, sizeof(industry));
   bool ok_country = extract_json_string(payload, "\"country\":", country, sizeof(country));
   bool ok_ipo = extract_json_string(payload, "\"ipo\":", ipo, sizeof(ipo));
@@ -298,7 +289,7 @@ static bool apply_quote_payload(size_t index, const String& payload)
     quote->trading_ready = ok_open || ok_high || ok_low || ok_previous_close;
     quote->ready = true;
     snprintf(quote->status, sizeof(quote->status), "%s", ok_status ? status : "USD");
-    update_timestamp(quote);
+    copy_or_default(quote->updated_at, sizeof(quote->updated_at), ok_updated_at, updated_at, "--:--");
     copy_or_default(quote->industry, sizeof(quote->industry), ok_industry, industry, "-");
     copy_or_default(quote->country, sizeof(quote->country), ok_country, country, "-");
     copy_or_default(quote->ipo, sizeof(quote->ipo), ok_ipo, ipo, "-");
