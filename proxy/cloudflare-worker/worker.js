@@ -125,6 +125,10 @@ async function fetchJson(url) {
   return response.json();
 }
 
+function finnhubApiBase(env) {
+  return String(env.FINNHUB_BASE_URL || "https://api2.finnhub.io/api/v1").replace(/\/$/, "");
+}
+
 async function loadLatestFirmware(env) {
   const repository = env.GITHUB_REPOSITORY || defaultFirmwareRepository;
   const manifestUrl = env.FIRMWARE_MANIFEST_URL ||
@@ -212,13 +216,102 @@ function publicFirmwareManifest(release, origin) {
   };
 }
 
+function quoteCacheKey(symbol) {
+  return new Request(`https://cache.internal/quote-v2?symbol=${encodeURIComponent(symbol)}`);
+}
+
+function lastGoodQuoteCacheKey(symbol) {
+  return new Request(`https://cache.internal/quote-last-good-v2?symbol=${encodeURIComponent(symbol)}`);
+}
+
+function quoteRetryCacheKey(symbol) {
+  return new Request(`https://cache.internal/quote-retry-v1?symbol=${encodeURIComponent(symbol)}`);
+}
+
+function profileCacheKey(symbol) {
+  return new Request(`https://cache.internal/profile-v1?symbol=${encodeURIComponent(symbol)}`);
+}
+
+function historyCacheKey(symbol) {
+  return new Request(`https://cache.internal/history-v1?symbol=${encodeURIComponent(symbol)}`);
+}
+
+async function readCachedJson(cacheKey) {
+  const cached = await caches.default.match(cacheKey);
+  return cached ? cached.json() : null;
+}
+
+async function writeCachedJson(cacheKey, payload, ttl) {
+  const response = json(payload, 200, { "cache-control": `public, max-age=${ttl}` });
+  await caches.default.put(cacheKey, response);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchProfilePayload(item, env) {
+  const token = env.FINNHUB_TOKEN;
+  const profileUrl = `${finnhubApiBase(env)}/stock/profile2?symbol=${encodeURIComponent(item.symbol)}&token=${encodeURIComponent(token)}`;
+  const profile = await fetchJson(profileUrl);
+  return {
+    industry: String(profile.finnhubIndustry || "-"),
+    country: String(profile.country || "-"),
+    ipo: String(profile.ipo || "-"),
+    market_cap: formatMarketCapMillions(profile.marketCapitalization),
+    shares_out: formatShareMillions(profile.shareOutstanding),
+  };
+}
+
+async function fetchHistoryPayload(item, env) {
+  const token = env.FINNHUB_TOKEN;
+  const to = Math.floor(Date.now() / 1000);
+  const from = unixSecondsForDaysAgo(45);
+  const candleUrl = `${finnhubApiBase(env)}/stock/candle?symbol=${encodeURIComponent(item.symbol)}&resolution=D&from=${from}&to=${to}&token=${encodeURIComponent(token)}`;
+  const candleData = await fetchJson(candleUrl);
+  const values = candleData.s === "ok" && Array.isArray(candleData.c)
+    ? lastValues(candleData.c, 30).map((value) => Number(value.toFixed(2)))
+    : [];
+  return { values };
+}
+
+async function warmOneSupplementalItem(items, env) {
+  const profileTtl = Number(env.PROFILE_CACHE_TTL_SECONDS || 86400);
+  const historyTtl = Number(env.HISTORY_CACHE_TTL_SECONDS || 21600);
+  const retryTtl = Number(env.SUPPLEMENT_RETRY_TTL_SECONDS || 900);
+
+  for (const item of items) {
+    const key = profileCacheKey(item.symbol);
+    if (await readCachedJson(key)) continue;
+    try {
+      await writeCachedJson(key, await fetchProfilePayload(item, env), profileTtl);
+    } catch (error) {
+      await writeCachedJson(key, { unavailable: true }, retryTtl);
+      console.warn(`Profile warm failed ${item.symbol}: ${String(error.message || error)}`);
+    }
+    break;
+  }
+
+  for (const item of items) {
+    const key = historyCacheKey(item.symbol);
+    if (await readCachedJson(key)) continue;
+    try {
+      await writeCachedJson(key, await fetchHistoryPayload(item, env), historyTtl);
+    } catch (error) {
+      await writeCachedJson(key, { unavailable: true, values: [] }, retryTtl);
+      console.warn(`History warm failed ${item.symbol}: ${String(error.message || error)}`);
+    }
+    break;
+  }
+}
+
 async function buildQuotePayload(item, env) {
   const token = env.FINNHUB_TOKEN;
   if (!token) {
     throw new Error("Missing FINNHUB_TOKEN secret");
   }
 
-  const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(item.symbol)}&token=${encodeURIComponent(token)}`;
+  const quoteUrl = `${finnhubApiBase(env)}/quote?symbol=${encodeURIComponent(item.symbol)}&token=${encodeURIComponent(token)}`;
   const quoteData = await fetchJson(quoteUrl);
 
   const price = Number(quoteData.c || 0);
@@ -237,26 +330,14 @@ async function buildQuotePayload(item, env) {
     changePercent = (change * 100) / previousClose;
   }
 
-  let profile = {};
-  try {
-    const profileUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(item.symbol)}&token=${encodeURIComponent(token)}`;
-    profile = await fetchJson(profileUrl);
-  } catch (_) {
-    profile = {};
-  }
-
-  let history = [];
-  try {
-    const to = Math.floor(Date.now() / 1000);
-    const from = unixSecondsForDaysAgo(45);
-    const candleUrl = `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(item.symbol)}&resolution=D&from=${from}&to=${to}&token=${encodeURIComponent(token)}`;
-    const candleData = await fetchJson(candleUrl);
-    if (candleData.s === "ok" && Array.isArray(candleData.c)) {
-      history = lastValues(candleData.c, 30).map((value) => Number(value.toFixed(2)));
-    }
-  } catch (_) {
-    history = [];
-  }
+  const [cachedProfile, cachedHistory] = await Promise.all([
+    readCachedJson(profileCacheKey(item.symbol)),
+    readCachedJson(historyCacheKey(item.symbol)),
+  ]);
+  const profile = cachedProfile && !cachedProfile.unavailable ? cachedProfile : {};
+  const history = cachedHistory && Array.isArray(cachedHistory.values)
+    ? cachedHistory.values
+    : [];
 
   return {
     symbol: item.symbol,
@@ -270,11 +351,11 @@ async function buildQuotePayload(item, env) {
     l: Number(Number(quoteData.l || 0).toFixed(2)),
     pc: Number(previousClose.toFixed(2)),
     updated_at: nowTimeString(),
-    industry: String(profile.finnhubIndustry || "-"),
+    industry: String(profile.industry || "-"),
     country: String(profile.country || "-"),
     ipo: String(profile.ipo || "-"),
-    market_cap: formatMarketCapMillions(profile.marketCapitalization),
-    shares_out: formatShareMillions(profile.shareOutstanding),
+    market_cap: String(profile.market_cap || "-"),
+    shares_out: String(profile.shares_out || "-"),
     history,
     ready: true,
     error: "",
@@ -350,19 +431,55 @@ async function buildFxPayload(item) {
   };
 }
 
-async function cachedQuote(item, request, env) {
+async function cachedQuote(item, env) {
   const cache = caches.default;
-  const cacheKey = new Request(`https://cache.internal/quote-history-v1?symbol=${encodeURIComponent(item.symbol)}`);
+  const cacheKey = quoteCacheKey(item.symbol);
   const cached = await cache.match(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const payload = await buildQuotePayload(item, env);
-  const ttl = Number(env.CACHE_TTL_SECONDS || 55);
-  const response = json(payload, 200, { "cache-control": `public, max-age=${ttl}` });
-  await cache.put(cacheKey, response.clone());
-  return response;
+  const retryState = await readCachedJson(quoteRetryCacheKey(item.symbol));
+  if (retryState) {
+    const lastGood = await readCachedJson(lastGoodQuoteCacheKey(item.symbol));
+    if (lastGood && Number(lastGood.c || 0) > 0.01) {
+      return json({
+        ...lastGood,
+        stale: true,
+        error: `Using last good quote: ${String(retryState.error || "upstream cooldown")}`,
+      }, 200, { "cache-control": "public, max-age=15" });
+    }
+    throw new Error(String(retryState.error || "Upstream cooldown"));
+  }
+
+  try {
+    const payload = await buildQuotePayload(item, env);
+    const ttl = Number(env.CACHE_TTL_SECONDS || 55);
+    const response = json(payload, 200, { "cache-control": `public, max-age=${ttl}` });
+    await cache.put(cacheKey, response.clone());
+    await writeCachedJson(
+      lastGoodQuoteCacheKey(item.symbol),
+      payload,
+      Number(env.STALE_QUOTE_TTL_SECONDS || 86400),
+    );
+    return response;
+  } catch (error) {
+    const errorText = String(error.message || error);
+    await writeCachedJson(
+      quoteRetryCacheKey(item.symbol),
+      { error: errorText },
+      Number(env.QUOTE_RETRY_TTL_SECONDS || 20),
+    );
+    const lastGood = await readCachedJson(lastGoodQuoteCacheKey(item.symbol));
+    if (lastGood && Number(lastGood.c || 0) > 0.01) {
+      return json({
+        ...lastGood,
+        stale: true,
+        error: `Using last good quote: ${errorText}`,
+      }, 200, { "cache-control": "public, max-age=15" });
+    }
+    throw error;
+  }
 }
 
 async function cachedFx(item, request, env) {
@@ -381,7 +498,7 @@ async function cachedFx(item, request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
@@ -426,7 +543,11 @@ export default {
       }
       const item = resolveSymbol(symbol);
       try {
-        return await cachedQuote(item, request, env);
+        const response = await cachedQuote(item, env);
+        if (ctx) {
+          ctx.waitUntil(warmOneSupplementalItem([item], env));
+        }
+        return response;
       } catch (error) {
         return json({
           symbol: item.symbol,
@@ -517,12 +638,15 @@ export default {
 
     if (url.pathname === "/quotes") {
       const requestedItems = parseRequestedItems(url.searchParams.get("symbols"), resolveSymbol, symbols);
-      const results = await Promise.all(requestedItems.map(async (item) => {
+      const results = [];
+      const requestGapMs = Number(env.QUOTE_REQUEST_GAP_MS || 350);
+      for (let index = 0; index < requestedItems.length; index++) {
+        const item = requestedItems[index];
         try {
-          const response = await cachedQuote(item, request, env);
-          return await response.json();
+          const response = await cachedQuote(item, env);
+          results.push(await response.json());
         } catch (error) {
-          return {
+          results.push({
             symbol: item.symbol,
             name: item.name,
             status: item.status,
@@ -541,9 +665,15 @@ export default {
             shares_out: "-",
             ready: false,
             error: String(error.message || error),
-          };
+          });
         }
-      }));
+        if (index + 1 < requestedItems.length && requestGapMs > 0) {
+          await sleep(requestGapMs);
+        }
+      }
+      if (ctx && results.every((result) => result.ready)) {
+        ctx.waitUntil(warmOneSupplementalItem(requestedItems, env));
+      }
       return json(results);
     }
 
