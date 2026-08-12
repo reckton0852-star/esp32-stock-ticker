@@ -1,10 +1,10 @@
 {
-    "ready":  false,
+    "ready":  true,
     "version":  "v2.1.4",
     "notes":  "Stagger device startup refreshes and share short-lived batch quote cache across devices.",
     "md5":  "6e37ba6e2e522b553c7c9a9db8e54c01",
     "size":  1495344,
     "asset_url":  "https://github.com/reckton0852-star/esp32-stock-ticker/releases/download/v2.1.4/esp32-stock-ticker.bin",
-    "published_at":  "",
-    "error":  "Release asset is not published yet."
+    "published_at":  "2026-08-12T14:23:03Z",
+    "error":  ""
 }
