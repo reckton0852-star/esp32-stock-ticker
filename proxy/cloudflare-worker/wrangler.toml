@@ -4,6 +4,7 @@ compatibility_date = "2026-06-20"
 
 [vars]
 CACHE_TTL_SECONDS = "55"
+BATCH_CACHE_TTL_SECONDS = "12"
 FX_CACHE_TTL_SECONDS = "3600"
 FINNHUB_BASE_URL = "https://api2.finnhub.io/api/v1"
 PROFILE_CACHE_TTL_SECONDS = "86400"

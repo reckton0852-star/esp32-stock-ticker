@@ -8,6 +8,8 @@
 
 static const uint32_t STOCK_HTTP_TIMEOUT_MS = 12000;
 static const uint32_t STOCK_REQUEST_GAP_MS = 600;
+static const uint32_t STOCK_INITIAL_STAGGER_MIN_MS = 2000;
+static const uint32_t STOCK_INITIAL_STAGGER_RANGE_MS = 10001;
 static const size_t MAX_STOCK_COUNT = 8;
 static StockQuote quotes[MAX_STOCK_COUNT];
 static float quote_history[MAX_STOCK_COUNT][STOCK_TREND_POINTS];
@@ -257,6 +259,7 @@ static bool apply_quote_payload(size_t index, const String& payload)
   char ipo[16] = {0};
   char market_cap[16] = {0};
   char shares_out[16] = {0};
+  char source[12] = {0};
 
   bool ok_price = extract_json_float(payload, "\"c\":", &price);
   bool ok_change = extract_json_float(payload, "\"d\":", &change);
@@ -272,6 +275,7 @@ static bool apply_quote_payload(size_t index, const String& payload)
   bool ok_ipo = extract_json_string(payload, "\"ipo\":", ipo, sizeof(ipo));
   bool ok_market_cap = extract_json_string(payload, "\"market_cap\":", market_cap, sizeof(market_cap));
   bool ok_shares_out = extract_json_string(payload, "\"shares_out\":", shares_out, sizeof(shares_out));
+  bool ok_source = extract_json_string(payload, "\"source\":", source, sizeof(source));
   float daily_history[STOCK_DAILY_POINTS];
   uint8_t daily_history_count = extract_json_float_array(payload, "\"history\":", daily_history, STOCK_DAILY_POINTS);
 
@@ -302,9 +306,10 @@ static bool apply_quote_payload(size_t index, const String& payload)
       quote->daily_history_count = daily_history_count;
     }
     append_quote_history(index, quote->price);
-    printf("%s ok %s: %.4f %.4f %.2f%%\r\n",
+    printf("%s ok %s: %.4f %.4f %.2f%% [%s]\r\n",
       fx_mode() ? "FX" : "Stock",
-      quote->symbol, quote->price, quote->change, quote->change_percent);
+      quote->symbol, quote->price, quote->change, quote->change_percent,
+      ok_source ? source : "UNKNOWN");
     return true;
   } else {
     if(!quote->ready) {
@@ -544,6 +549,12 @@ void Stock_Init(void)
     );
   }
 
+  uint64_t chip_id = ESP.getEfuseMac();
+  uint32_t initial_stagger_ms = STOCK_INITIAL_STAGGER_MIN_MS +
+    (uint32_t)(chip_id % STOCK_INITIAL_STAGGER_RANGE_MS);
+  next_request_allowed_ms = millis() + initial_stagger_ms;
+  printf("%s initial refresh stagger: %lu ms\r\n",
+    fx_mode() ? "FX" : "Stock", (unsigned long)initial_stagger_ms);
   queue_batch_request();
 }
 

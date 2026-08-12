@@ -220,6 +220,11 @@ function quoteCacheKey(symbol) {
   return new Request(`https://cache.internal/quote-v2?symbol=${encodeURIComponent(symbol)}`);
 }
 
+function quoteBatchCacheKey(items) {
+  const symbols = items.map((item) => item.symbol).join(",");
+  return new Request(`https://cache.internal/quote-batch-v1?symbols=${encodeURIComponent(symbols)}`);
+}
+
 function lastGoodQuoteCacheKey(symbol) {
   return new Request(`https://cache.internal/quote-last-good-v2?symbol=${encodeURIComponent(symbol)}`);
 }
@@ -431,27 +436,9 @@ async function buildFxPayload(item) {
   };
 }
 
-async function cachedQuote(item, env) {
+async function fetchAndCacheQuote(item, env) {
   const cache = caches.default;
   const cacheKey = quoteCacheKey(item.symbol);
-  const cached = await cache.match(cacheKey);
-  if (cached) {
-    return cached;
-  }
-
-  const retryState = await readCachedJson(quoteRetryCacheKey(item.symbol));
-  if (retryState) {
-    const lastGood = await readCachedJson(lastGoodQuoteCacheKey(item.symbol));
-    if (lastGood && Number(lastGood.c || 0) > 0.01) {
-      return json({
-        ...lastGood,
-        stale: true,
-        error: `Using last good quote: ${String(retryState.error || "upstream cooldown")}`,
-      }, 200, { "cache-control": "public, max-age=15" });
-    }
-    throw new Error(String(retryState.error || "Upstream cooldown"));
-  }
-
   try {
     const payload = await buildQuotePayload(item, env);
     const ttl = Number(env.CACHE_TTL_SECONDS || 55);
@@ -462,7 +449,7 @@ async function cachedQuote(item, env) {
       payload,
       Number(env.STALE_QUOTE_TTL_SECONDS || 86400),
     );
-    return response;
+    return { payload, source: "LIVE" };
   } catch (error) {
     const errorText = String(error.message || error);
     await writeCachedJson(
@@ -472,14 +459,42 @@ async function cachedQuote(item, env) {
     );
     const lastGood = await readCachedJson(lastGoodQuoteCacheKey(item.symbol));
     if (lastGood && Number(lastGood.c || 0) > 0.01) {
-      return json({
-        ...lastGood,
-        stale: true,
-        error: `Using last good quote: ${errorText}`,
-      }, 200, { "cache-control": "public, max-age=15" });
+      return {
+        payload: {
+          ...lastGood,
+          stale: true,
+          error: `Using last good quote: ${errorText}`,
+        },
+        source: "STALE",
+      };
     }
     throw error;
   }
+}
+
+async function cachedQuote(item, env) {
+  const cache = caches.default;
+  const cached = await cache.match(quoteCacheKey(item.symbol));
+  if (cached) {
+    return json({ ...(await cached.json()), source: "CACHE" });
+  }
+
+  const retryState = await readCachedJson(quoteRetryCacheKey(item.symbol));
+  if (retryState) {
+    const lastGood = await readCachedJson(lastGoodQuoteCacheKey(item.symbol));
+    if (lastGood && Number(lastGood.c || 0) > 0.01) {
+      return json({
+        ...lastGood,
+        stale: true,
+        source: "STALE",
+        error: `Using last good quote: ${String(retryState.error || "upstream cooldown")}`,
+      }, 200, { "cache-control": "public, max-age=15" });
+    }
+    throw new Error(String(retryState.error || "Upstream cooldown"));
+  }
+
+  const result = await fetchAndCacheQuote(item, env);
+  return json({ ...result.payload, source: result.source });
 }
 
 async function cachedFx(item, request, env) {
@@ -487,14 +502,14 @@ async function cachedFx(item, request, env) {
   const cacheKey = new Request(`https://cache.internal/fx-history-v1?base=${encodeURIComponent(item.symbol)}`);
   const cached = await cache.match(cacheKey);
   if (cached) {
-    return cached;
+    return json({ ...(await cached.json()), source: "CACHE" });
   }
 
   const payload = await buildFxPayload(item);
   const ttl = Number(env.FX_CACHE_TTL_SECONDS || 3600);
   const response = json(payload, 200, { "cache-control": `public, max-age=${ttl}` });
   await cache.put(cacheKey, response.clone());
-  return response;
+  return json({ ...payload, source: "LIVE" });
 }
 
 export default {
@@ -638,13 +653,33 @@ export default {
 
     if (url.pathname === "/quotes") {
       const requestedItems = parseRequestedItems(url.searchParams.get("symbols"), resolveSymbol, symbols);
+      const batchCache = caches.default;
+      const batchCacheKey = quoteBatchCacheKey(requestedItems);
+      let cachedBatch = null;
+      try {
+        cachedBatch = await batchCache.match(batchCacheKey);
+      } catch (error) {
+        console.warn(`Batch cache read failed: ${String(error.message || error)}`);
+      }
+      if (cachedBatch) {
+        const cachedResults = await cachedBatch.json();
+        return json(cachedResults.map((result) => ({
+          ...result,
+          source: result.stale ? "STALE" : "CACHE",
+        })));
+      }
+
       const results = [];
       const requestGapMs = Number(env.QUOTE_REQUEST_GAP_MS || 350);
       for (let index = 0; index < requestedItems.length; index++) {
         const item = requestedItems[index];
         try {
           const response = await cachedQuote(item, env);
-          results.push(await response.json());
+          const result = await response.json();
+          results.push(result);
+          if (index + 1 < requestedItems.length && requestGapMs > 0 && result.source === "LIVE") {
+            await sleep(requestGapMs);
+          }
         } catch (error) {
           results.push({
             symbol: item.symbol,
@@ -667,8 +702,16 @@ export default {
             error: String(error.message || error),
           });
         }
-        if (index + 1 < requestedItems.length && requestGapMs > 0) {
-          await sleep(requestGapMs);
+      }
+      if (results.every((result) => result.ready && !result.stale)) {
+        const batchTtl = Number(env.BATCH_CACHE_TTL_SECONDS || 12);
+        try {
+          await batchCache.put(
+            batchCacheKey,
+            json(results, 200, { "cache-control": `public, max-age=${batchTtl}` }),
+          );
+        } catch (error) {
+          console.warn(`Batch cache write failed: ${String(error.message || error)}`);
         }
       }
       if (ctx && results.every((result) => result.ready)) {
