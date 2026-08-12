@@ -260,6 +260,7 @@ static bool apply_quote_payload(size_t index, const String& payload)
   char market_cap[16] = {0};
   char shares_out[16] = {0};
   char source[12] = {0};
+  float age_seconds = 0.0f;
 
   bool ok_price = extract_json_float(payload, "\"c\":", &price);
   bool ok_change = extract_json_float(payload, "\"d\":", &change);
@@ -276,6 +277,7 @@ static bool apply_quote_payload(size_t index, const String& payload)
   bool ok_market_cap = extract_json_string(payload, "\"market_cap\":", market_cap, sizeof(market_cap));
   bool ok_shares_out = extract_json_string(payload, "\"shares_out\":", shares_out, sizeof(shares_out));
   bool ok_source = extract_json_string(payload, "\"source\":", source, sizeof(source));
+  bool ok_age = extract_json_float(payload, "\"age_seconds\":", &age_seconds);
   float daily_history[STOCK_DAILY_POINTS];
   uint8_t daily_history_count = extract_json_float_array(payload, "\"history\":", daily_history, STOCK_DAILY_POINTS);
 
@@ -292,6 +294,9 @@ static bool apply_quote_payload(size_t index, const String& payload)
     quote->change_percent = change_percent;
     quote->trading_ready = ok_open || ok_high || ok_low || ok_previous_close;
     quote->ready = true;
+    quote->upstream_stale = ok_source && strcmp(source, "STALE") == 0;
+    quote->quote_age_at_fetch_seconds = 0;
+    copy_or_default(quote->source, sizeof(quote->source), ok_source, source, "UNKNOWN");
     snprintf(quote->status, sizeof(quote->status), "%s", ok_status ? status : "USD");
     copy_or_default(quote->updated_at, sizeof(quote->updated_at), ok_updated_at, updated_at, "--:--");
     copy_or_default(quote->industry, sizeof(quote->industry), ok_industry, industry, "-");
@@ -300,6 +305,11 @@ static bool apply_quote_payload(size_t index, const String& payload)
     copy_or_default(quote->market_cap, sizeof(quote->market_cap), ok_market_cap, market_cap, "-");
     copy_or_default(quote->shares_out, sizeof(quote->shares_out), ok_shares_out, shares_out, "-");
     quote->profile_ready = ok_industry || ok_country || ok_ipo || ok_market_cap || ok_shares_out;
+    uint32_t received_age_seconds = ok_age && age_seconds > 0.0f ? (uint32_t)age_seconds : 0U;
+    if(received_age_seconds > 604800U) {
+      received_age_seconds = 604800U;
+    }
+    quote->quote_age_at_fetch_seconds = received_age_seconds;
     quote->last_fetch_ms = millis();
     if(daily_history_count >= 2) {
       memcpy(quote->daily_history, daily_history, sizeof(float) * daily_history_count);
@@ -685,12 +695,34 @@ bool Stock_NetworkIdle(void)
 
 bool Stock_CurrentIsStale(uint32_t stale_after_ms)
 {
-  if(current_index >= stock_count || stale_after_ms == 0) {
+  if(current_index >= stock_count) {
     return false;
   }
 
   const StockQuote * quote = &quotes[current_index];
-  return quote->ready && quote->last_fetch_ms != 0 && millis() - quote->last_fetch_ms >= stale_after_ms;
+  if(quote->ready && quote->upstream_stale) {
+    return true;
+  }
+  if(stale_after_ms == 0) {
+    return false;
+  }
+  return quote->ready && quote->last_fetch_ms != 0 &&
+    (uint64_t)Stock_CurrentAgeSeconds() * 1000ULL >= stale_after_ms;
+}
+
+uint32_t Stock_CurrentAgeSeconds(void)
+{
+  if(current_index >= stock_count) {
+    return UINT32_MAX;
+  }
+
+  const StockQuote * quote = &quotes[current_index];
+  if(!quote->ready || quote->last_fetch_ms == 0) {
+    return UINT32_MAX;
+  }
+  uint32_t elapsed_seconds = (millis() - quote->last_fetch_ms) / 1000UL;
+  uint32_t remaining = UINT32_MAX - quote->quote_age_at_fetch_seconds;
+  return quote->quote_age_at_fetch_seconds + (elapsed_seconds > remaining ? remaining : elapsed_seconds);
 }
 
 const char * Stock_ProxyBaseUrl(void)

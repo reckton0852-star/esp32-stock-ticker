@@ -21,6 +21,7 @@ static uint8_t current_view_mode = 0;
 static uint32_t last_rendered_data_version = UINT32_MAX;
 static uint8_t last_rendered_battery_percent = 255;
 static bool last_rendered_stale = false;
+static uint32_t last_rendered_age_minute = UINT32_MAX;
 
 typedef enum {
   THEME_CLASSIC = 0,
@@ -658,6 +659,7 @@ static void update_screen(void)
   char buffer[64];
   bool fx_mode = Stock_IsFxMode();
   bool stale = Stock_CurrentIsStale(stock_stale_after_ms());
+  uint32_t age_seconds = Stock_CurrentAgeSeconds();
 
   if(!quote) {
     return;
@@ -720,7 +722,17 @@ static void update_screen(void)
     lv_obj_set_style_text_color(change_label, lv_color_hex(0xffffff), 0);
 
     lv_label_set_text(market_label, quote->status);
-    lv_label_set_text(updated_label, quote->updated_at);
+    if(quote->upstream_stale || age_seconds == UINT32_MAX) {
+      lv_label_set_text(updated_label, "STALE");
+    } else if(age_seconds < 60) {
+      lv_label_set_text(updated_label, "NOW");
+    } else if(age_seconds < 3600) {
+      snprintf(buffer, sizeof(buffer), "%lum", (unsigned long)(age_seconds / 60));
+      lv_label_set_text(updated_label, buffer);
+    } else {
+      snprintf(buffer, sizeof(buffer), "%luh", (unsigned long)(age_seconds / 3600));
+      lv_label_set_text(updated_label, buffer);
+    }
   } else {
     lv_label_set_text(price_label, "--.--");
     lv_label_set_text(change_label, "--");
@@ -899,6 +911,7 @@ static void update_screen(void)
   last_rendered_data_version = Stock_DataVersion();
   last_rendered_battery_percent = BAT_Has_Reading() ? BAT_Get_Percent() : 255;
   last_rendered_stale = stale;
+  last_rendered_age_minute = age_seconds == UINT32_MAX ? UINT32_MAX : age_seconds / 60U;
 }
 
 static void handle_button_action(void)
@@ -935,9 +948,12 @@ void IRAM_ATTR example1_increase_lvgl_tick(lv_timer_t * t)
   uint32_t data_version = Stock_DataVersion();
   uint8_t battery_percent = BAT_Has_Reading() ? BAT_Get_Percent() : 255;
   bool stale = Stock_CurrentIsStale(stock_stale_after_ms());
+  uint32_t age_seconds = Stock_CurrentAgeSeconds();
+  uint32_t age_minute = age_seconds == UINT32_MAX ? UINT32_MAX : age_seconds / 60U;
   if(data_version != last_rendered_data_version ||
      battery_percent != last_rendered_battery_percent ||
-     stale != last_rendered_stale) {
+     stale != last_rendered_stale ||
+     age_minute != last_rendered_age_minute) {
     update_screen();
   }
 }
@@ -950,6 +966,7 @@ void Lvgl_Example1(void)
   last_rendered_data_version = UINT32_MAX;
   last_rendered_battery_percent = 255;
   last_rendered_stale = false;
+  last_rendered_age_minute = UINT32_MAX;
   stock_refresh_interval_ms = (uint32_t)AppConfig_Get()->refresh_seconds * 1000UL;
   auto_symbol_interval_ms = (uint32_t)AppConfig_Get()->rotate_seconds * 1000UL;
   build_screen();

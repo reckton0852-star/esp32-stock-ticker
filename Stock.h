@@ -16,6 +16,9 @@ typedef struct {
   bool loading;
   bool profile_ready;
   bool trading_ready;
+  bool upstream_stale;
+  uint32_t quote_age_at_fetch_seconds;
+  char source[12];
   char status[32];
   char updated_at[24];
   char industry[32];
@@ -45,6 +48,7 @@ void Stock_RequestCurrent(void);
 bool Stock_RequestCurrentIfStale(uint32_t min_interval_ms);
 void Stock_ServiceAutoRefresh(uint32_t refresh_interval_ms, uint32_t retry_interval_ms);
 bool Stock_CurrentIsStale(uint32_t stale_after_ms);
+uint32_t Stock_CurrentAgeSeconds(void);
 void Stock_SetNetworkPaused(bool paused);
 bool Stock_NetworkIdle(void);
 const char * Stock_ProxyBaseUrl(void);

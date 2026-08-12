@@ -5,7 +5,8 @@ This folder contains a cloud relay version of the stock proxy.
 ## What It Does
 
 - receives requests from the ESP32
-- fetches quote and company profile data from Finnhub
+- fetches live quote data from a primary market feed with Finnhub fallback
+- fetches company profile and daily history data from Finnhub
 - fetches daily FX reference rates from Frankfurter
 - returns the same JSON shape used by the local proxy
 - caches each symbol briefly at the edge to reduce repeated upstream calls

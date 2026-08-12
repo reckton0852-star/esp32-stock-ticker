@@ -71,13 +71,13 @@ function json(data, status = 200, extraHeaders = {}) {
   });
 }
 
-function nowTimeString() {
+function timeString(timestampMs = Date.now()) {
   return new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Shanghai",
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
-  }).format(new Date());
+  }).format(new Date(timestampMs));
 }
 
 function addDays(dateText, days) {
@@ -126,7 +126,7 @@ async function fetchJson(url) {
 }
 
 function finnhubApiBase(env) {
-  return String(env.FINNHUB_BASE_URL || "https://api2.finnhub.io/api/v1").replace(/\/$/, "");
+  return String(env.FINNHUB_BASE_URL || "https://finnhub.io/api/v1").replace(/\/$/, "");
 }
 
 async function loadLatestFirmware(env) {
@@ -217,12 +217,21 @@ function publicFirmwareManifest(release, origin) {
 }
 
 function quoteCacheKey(symbol) {
-  return new Request(`https://cache.internal/quote-v2?symbol=${encodeURIComponent(symbol)}`);
+  return new Request(`https://cache.internal/quote-v6?symbol=${encodeURIComponent(symbol)}`);
 }
 
 function quoteBatchCacheKey(items) {
   const symbols = items.map((item) => item.symbol).join(",");
-  return new Request(`https://cache.internal/quote-batch-v1?symbols=${encodeURIComponent(symbols)}`);
+  return new Request(`https://cache.internal/quote-batch-v5?symbols=${encodeURIComponent(symbols)}`);
+}
+
+function withQuoteAge(payload, source) {
+  const quoteAtMs = Number(payload?.market_at_ms || payload?.fetched_at_ms || Date.now());
+  return {
+    ...payload,
+    source,
+    age_seconds: Math.max(0, Math.floor((Date.now() - quoteAtMs) / 1000)),
+  };
 }
 
 function lastGoodQuoteCacheKey(symbol) {
@@ -310,7 +319,67 @@ async function warmOneSupplementalItem(items, env) {
   }
 }
 
-async function buildQuotePayload(item, env) {
+function firstPositive(values) {
+  if (!Array.isArray(values)) return 0;
+  for (const value of values) {
+    const number = Number(value || 0);
+    if (number > 0.01) return number;
+  }
+  return 0;
+}
+
+function yahooQuoteFromMeta(meta, quote = {}) {
+  const price = Number(meta.regularMarketPrice || 0);
+  const previousClose = Number(meta.chartPreviousClose || meta.previousClose || 0);
+  const marketAtMs = Number(meta.regularMarketTime || 0) * 1000;
+
+  if (!(price > 0.01) || !(previousClose > 0.01)) {
+    throw new Error("Yahoo returned no valid price");
+  }
+  if (!(marketAtMs > 1577836800000) || marketAtMs > Date.now() + 300000) {
+    throw new Error("Yahoo returned no valid market timestamp");
+  }
+
+  return {
+    price,
+    previousClose,
+    open: Number(meta.regularMarketOpen || firstPositive(quote.open) || firstPositive(quote.close) || 0),
+    high: Number(meta.regularMarketDayHigh || 0),
+    low: Number(meta.regularMarketDayLow || 0),
+    marketAtMs,
+    provider: "YAHOO",
+  };
+}
+
+async function fetchYahooQuotes(items) {
+  const symbols = items.map((item) => item.symbol).join(",");
+  const url = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(symbols)}` +
+    "&range=1d&interval=1m";
+  const data = await fetchJson(url);
+  const result = new Map();
+  for (const row of data?.spark?.result || []) {
+    const response = row?.response?.[0];
+    try {
+      result.set(String(row.symbol || "").toUpperCase(), yahooQuoteFromMeta(
+        response?.meta || {},
+        response?.indicators?.quote?.[0] || {},
+      ));
+    } catch (_) {
+      // A missing symbol falls back to Finnhub without failing the whole batch.
+    }
+  }
+  if (result.size === 0) throw new Error("Yahoo returned no batch quotes");
+  return result;
+}
+
+async function fetchYahooQuote(item) {
+  const quotes = await fetchYahooQuotes([item]);
+  const quote = quotes.get(item.symbol);
+  if (!quote) throw new Error("Yahoo returned no quote for symbol");
+  return quote;
+}
+
+async function fetchFinnhubQuote(item, env) {
   const token = env.FINNHUB_TOKEN;
   if (!token) {
     throw new Error("Missing FINNHUB_TOKEN secret");
@@ -320,20 +389,48 @@ async function buildQuotePayload(item, env) {
   const quoteData = await fetchJson(quoteUrl);
 
   const price = Number(quoteData.c || 0);
-  let change = Number(quoteData.d || 0);
-  let changePercent = Number(quoteData.dp || 0);
   const previousClose = Number(quoteData.pc || 0);
+  const marketAtMs = Number(quoteData.t || 0) * 1000;
 
   if (!(price > 0.01)) {
     throw new Error("No valid price");
   }
+  if (!(marketAtMs > 1577836800000) || marketAtMs > Date.now() + 300000) {
+    throw new Error("No valid market timestamp");
+  }
 
-  if (Math.abs(change) < 0.0001 && previousClose > 0.01) {
-    change = price - previousClose;
+  return {
+    price,
+    previousClose,
+    open: Number(quoteData.o || 0),
+    high: Number(quoteData.h || 0),
+    low: Number(quoteData.l || 0),
+    marketAtMs,
+    provider: "FINNHUB",
+  };
+}
+
+async function buildQuotePayload(item, env, loadPrimaryQuotes = null) {
+  let marketQuote;
+  let primaryError = "";
+  try {
+    if (loadPrimaryQuotes) {
+      const quotes = await loadPrimaryQuotes();
+      marketQuote = quotes.get(item.symbol);
+      if (!marketQuote) throw new Error("Yahoo batch missing symbol");
+    } else {
+      marketQuote = await fetchYahooQuote(item);
+    }
+  } catch (error) {
+    primaryError = String(error.message || error);
+    marketQuote = await fetchFinnhubQuote(item, env);
   }
-  if (Math.abs(changePercent) < 0.0001 && previousClose > 0.01) {
-    changePercent = (change * 100) / previousClose;
-  }
+
+  const price = marketQuote.price;
+  const previousClose = marketQuote.previousClose;
+  const change = price - previousClose;
+  const changePercent = previousClose > 0.01 ? (change * 100) / previousClose : 0;
+  const marketAtMs = marketQuote.marketAtMs;
 
   const [cachedProfile, cachedHistory] = await Promise.all([
     readCachedJson(profileCacheKey(item.symbol)),
@@ -351,11 +448,14 @@ async function buildQuotePayload(item, env) {
     c: Number(price.toFixed(2)),
     d: Number(change.toFixed(2)),
     dp: Number(changePercent.toFixed(2)),
-    o: Number(Number(quoteData.o || 0).toFixed(2)),
-    h: Number(Number(quoteData.h || 0).toFixed(2)),
-    l: Number(Number(quoteData.l || 0).toFixed(2)),
+    o: Number(marketQuote.open.toFixed(2)),
+    h: Number(marketQuote.high.toFixed(2)),
+    l: Number(marketQuote.low.toFixed(2)),
     pc: Number(previousClose.toFixed(2)),
-    updated_at: nowTimeString(),
+    fetched_at_ms: Date.now(),
+    market_at_ms: marketAtMs,
+    updated_at: timeString(marketAtMs),
+    provider: marketQuote.provider,
     industry: String(profile.industry || "-"),
     country: String(profile.country || "-"),
     ipo: String(profile.ipo || "-"),
@@ -363,7 +463,7 @@ async function buildQuotePayload(item, env) {
     shares_out: String(profile.shares_out || "-"),
     history,
     ready: true,
-    error: "",
+    error: primaryError ? `Primary fallback: ${primaryError}` : "",
   };
 }
 
@@ -424,7 +524,8 @@ async function buildFxPayload(item) {
     h: Number(price.toFixed(4)),
     l: Number(price.toFixed(4)),
     pc: Number(previousClose.toFixed(4)),
-    updated_at: nowTimeString(),
+    fetched_at_ms: Date.now(),
+    updated_at: timeString(),
     industry: "Currency",
     country: "CNY",
     ipo: String(latestData.date || "-"),
@@ -436,11 +537,11 @@ async function buildFxPayload(item) {
   };
 }
 
-async function fetchAndCacheQuote(item, env) {
+async function fetchAndCacheQuote(item, env, loadPrimaryQuotes = null) {
   const cache = caches.default;
   const cacheKey = quoteCacheKey(item.symbol);
   try {
-    const payload = await buildQuotePayload(item, env);
+    const payload = await buildQuotePayload(item, env, loadPrimaryQuotes);
     const ttl = Number(env.CACHE_TTL_SECONDS || 55);
     const response = json(payload, 200, { "cache-control": `public, max-age=${ttl}` });
     await cache.put(cacheKey, response.clone());
@@ -472,11 +573,11 @@ async function fetchAndCacheQuote(item, env) {
   }
 }
 
-async function cachedQuote(item, env) {
+async function cachedQuote(item, env, loadPrimaryQuotes = null) {
   const cache = caches.default;
   const cached = await cache.match(quoteCacheKey(item.symbol));
   if (cached) {
-    return json({ ...(await cached.json()), source: "CACHE" });
+    return json(withQuoteAge(await cached.json(), "CACHE"));
   }
 
   const retryState = await readCachedJson(quoteRetryCacheKey(item.symbol));
@@ -484,17 +585,18 @@ async function cachedQuote(item, env) {
     const lastGood = await readCachedJson(lastGoodQuoteCacheKey(item.symbol));
     if (lastGood && Number(lastGood.c || 0) > 0.01) {
       return json({
-        ...lastGood,
-        stale: true,
-        source: "STALE",
-        error: `Using last good quote: ${String(retryState.error || "upstream cooldown")}`,
+        ...withQuoteAge({
+          ...lastGood,
+          stale: true,
+          error: `Using last good quote: ${String(retryState.error || "upstream cooldown")}`,
+        }, "STALE"),
       }, 200, { "cache-control": "public, max-age=15" });
     }
     throw new Error(String(retryState.error || "Upstream cooldown"));
   }
 
-  const result = await fetchAndCacheQuote(item, env);
-  return json({ ...result.payload, source: result.source });
+  const result = await fetchAndCacheQuote(item, env, loadPrimaryQuotes);
+  return json(withQuoteAge(result.payload, result.source));
 }
 
 async function cachedFx(item, request, env) {
@@ -502,14 +604,14 @@ async function cachedFx(item, request, env) {
   const cacheKey = new Request(`https://cache.internal/fx-history-v1?base=${encodeURIComponent(item.symbol)}`);
   const cached = await cache.match(cacheKey);
   if (cached) {
-    return json({ ...(await cached.json()), source: "CACHE" });
+    return json(withQuoteAge(await cached.json(), "CACHE"));
   }
 
   const payload = await buildFxPayload(item);
   const ttl = Number(env.FX_CACHE_TTL_SECONDS || 3600);
   const response = json(payload, 200, { "cache-control": `public, max-age=${ttl}` });
   await cache.put(cacheKey, response.clone());
-  return json({ ...payload, source: "LIVE" });
+  return json(withQuoteAge(payload, "LIVE"));
 }
 
 export default {
@@ -664,17 +766,23 @@ export default {
       if (cachedBatch) {
         const cachedResults = await cachedBatch.json();
         return json(cachedResults.map((result) => ({
-          ...result,
-          source: result.stale ? "STALE" : "CACHE",
+          ...withQuoteAge(result, result.stale ? "STALE" : "CACHE"),
         })));
       }
 
       const results = [];
       const requestGapMs = Number(env.QUOTE_REQUEST_GAP_MS || 350);
+      let primaryQuotesPromise = null;
+      const loadPrimaryQuotes = () => {
+        if (!primaryQuotesPromise) {
+          primaryQuotesPromise = fetchYahooQuotes(requestedItems);
+        }
+        return primaryQuotesPromise;
+      };
       for (let index = 0; index < requestedItems.length; index++) {
         const item = requestedItems[index];
         try {
-          const response = await cachedQuote(item, env);
+          const response = await cachedQuote(item, env, loadPrimaryQuotes);
           const result = await response.json();
           results.push(result);
           if (index + 1 < requestedItems.length && requestGapMs > 0 && result.source === "LIVE") {
